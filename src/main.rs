@@ -15,7 +15,7 @@ use tokio::sync::{Semaphore};
 use simplelog::{TermLogger, LevelFilter, Config, TerminalMode, ColorChoice};
 
 // constants
-const SEMAPHORE_COUNT: usize = 128;
+const SEMAPHORE_COUNT: usize = 100;
 const LOG_INTERVAL: usize = 100;
 
 #[derive(Debug, StructOpt)]
@@ -68,8 +68,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         final_domain TEXT NOT NULL,
         status INTEGER NOT NULL,
         status_description TEXT NOT NULL,
-        response_time TEXT NOT NULL,
-        title TEXT NOT NULL
+        response_time NUMERIC(10, 2),
+        title TEXT NOT NULL,
+        timestamp TEXT NOT NULL
     )",
             [],
         )
@@ -177,6 +178,7 @@ fn init_semaphore(count: usize) -> Arc<Semaphore> {
 async fn init_client() -> Result<Arc<reqwest::Client>, reqwest::Error> {
     let client = ClientBuilder::new()
         .timeout(Duration::from_secs(10))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
         .build()?;
     Ok(Arc::new(client))
 }
@@ -225,10 +227,12 @@ async fn process_url(
                         "".to_string()
                     }, |e| e.inner_html());
 
+                let timestamp = chrono::Utc::now().to_rfc3339();
+
                 // Insert the result into the SQLite database
                 conn.execute(
-                    "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![initial_domain, final_domain, status.as_u16(), status_desc, elapsed, title],
+                    "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![initial_domain, final_domain, status.as_u16(), status_desc, elapsed, title, timestamp],
                 ).map_err(|e| anyhow::anyhow!("Error when writing to the database: {}", e))?;
 
                 Ok(())
@@ -285,7 +289,7 @@ fn extract_domain(extractor: &TldExtractor, url: &str) -> String {
             }
         }
         Err(err) => {
-            eprintln!("Error when extracting domain: {}", err);
+            error!("Error when extracting domain: {}", err);
             return "".to_string();
         }
     }
