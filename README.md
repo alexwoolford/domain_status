@@ -1,6 +1,6 @@
 # domain_status
 
-This is a multi-threaded tool implemented in Rust for checking the status and redirection of a list of URLs. It provides performance monitoring, error handling, and stores the result in a SQLite database.
+This is a multithreaded tool implemented in Rust for checking the status and redirection of a list of URLs. It provides performance monitoring, error handling, and stores the result in a SQLite database.
 
 ## Features
 - Multithreading using tokio and futures.

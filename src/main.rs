@@ -1,18 +1,22 @@
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
-use reqwest::ClientBuilder;
-use rusqlite::{params, Result};
-use scraper::{Html, Selector};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
+
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use log::error;
+use log::info;
+use reqwest::ClientBuilder;
+use rusqlite::{params, Result};
+use scraper::{Html, Selector};
+use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 use structopt::StructOpt;
 use tldextract::{TldExtractor, TldOption};
-use tokio::sync::{Semaphore};
-use simplelog::{TermLogger, LevelFilter, Config, TerminalMode, ColorChoice};
+use tokio::sync::Semaphore;
 
 // constants
 const SEMAPHORE_COUNT: usize = 100;
@@ -20,8 +24,8 @@ const LOG_INTERVAL: usize = 100;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-name = "url_checker",
-about = "Checks a list of URLs for their status and redirection."
+    name = "url_checker",
+    about = "Checks a list of URLs for their status and redirection."
 )]
 struct Opt {
     /// File to read
@@ -29,17 +33,12 @@ struct Opt {
     file: PathBuf,
 }
 
-#[derive(Default)]
-struct ErrorCounts {
-    connection_refused: u32,
-    dns_error: u32,
-    title_extract_error: u32,
-    other_errors: u32,
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct ErrorStats {
-    counts: Arc<Mutex<ErrorCounts>>,
+    connection_refused: Arc<AtomicUsize>,
+    dns_error: Arc<AtomicUsize>,
+    title_extract_error: Arc<AtomicUsize>,
+    other_errors: Arc<AtomicUsize>,
 }
 
 #[tokio::main]
@@ -74,10 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )",
             [],
         )
-            .unwrap();
-    })
-        .await
         .unwrap();
+    })
+    .await
+    .unwrap();
 
     let start_time = std::time::Instant::now();
     let mut count = 0;
@@ -85,12 +84,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut processed_urls = 0;
 
     let error_stats = ErrorStats {
-        counts: Arc::new(Mutex::new(ErrorCounts {
-            connection_refused: 0,
-            dns_error: 0,
-            title_extract_error: 0,
-            other_errors: 0,
-        })),
+        connection_refused: Arc::new(AtomicUsize::new(0)),
+        dns_error: Arc::new(AtomicUsize::new(0)),
+        title_extract_error: Arc::new(AtomicUsize::new(0)),
+        other_errors: Arc::new(AtomicUsize::new(0)),
     };
 
     for line in reader.lines() {
@@ -115,7 +112,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let permit = semaphore_clone.acquire_owned().await.unwrap();
 
         tasks.push(tokio::spawn(async move {
-
             let _permit = permit;
 
             process_url(
@@ -134,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _lines_per_sec = processed_urls as f64 / elapsed.as_secs_f64();
             processed_urls += count;
 
-            println!(
+            info!(
                 "Processed {} lines in {:.2} seconds (~{:.2} lines/sec)",
                 processed_urls,
                 elapsed.as_secs_f64(),
@@ -152,22 +148,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _lines_per_sec = processed_urls as f64 / elapsed.as_secs_f64();
     }
 
-    println!("Error Summary:");
-    println!("Connection Refused: {}", error_stats.counts.lock().unwrap().connection_refused);
-    println!("DNS Errors: {}", error_stats.counts.lock().unwrap().dns_error);
-    println!("Other Errors: {}", error_stats.counts.lock().unwrap().other_errors);
-    println!("Title extract error: {}", error_stats.counts.lock().unwrap().title_extract_error);
+    info!("Error Summary:");
+    info!(
+        "Connection Refused: {}",
+        error_stats.connection_refused.load(Ordering::SeqCst)
+    );
+    info!("DNS Errors: {}", error_stats.dns_error.load(Ordering::SeqCst));
+    info!(
+        "Other Errors: {}",
+        error_stats.other_errors.load(Ordering::SeqCst)
+    );
+    info!(
+        "Title extract error: {}",
+        error_stats.title_extract_error.load(Ordering::SeqCst)
+    );
 
     Ok(())
 }
 
 fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = TermLogger::new(
-        LevelFilter::Warn,
+    let term_logger = TermLogger::new(
+        LevelFilter::Info,
         Config::default(),
         TerminalMode::Mixed,
         ColorChoice::Auto,
     );
+
+    // Leak the logger so that it lives for the entire duration of the program
+    let leaked_term_logger = Box::leak(term_logger);
+    log::set_logger(leaked_term_logger)?;
+    log::set_max_level(LevelFilter::Info);
     Ok(())
 }
 
@@ -200,7 +210,6 @@ async fn process_url(
     extractor: Arc<TldExtractor>,
     error_stats: ErrorStats,
 ) {
-
     let start_time = std::time::Instant::now();
     let res = client.get(&url).send().await;
     let elapsed = start_time.elapsed().as_secs_f64();
@@ -209,11 +218,13 @@ async fn process_url(
         Ok(response) => {
             let final_url = response.url().to_string();
             let status = response.status();
-            let status_desc = get_status_description(status.as_u16());
+            // let status_desc = get_status_description(status);
+
+            let status_desc = status.canonical_reason().unwrap_or("Unknown Status Code");
+
             let body = response.text().await.unwrap_or_default();
 
             match tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-
                 let initial_domain = extract_domain(&extractor, &url);
                 let final_domain = extract_domain(&extractor, &final_url);
 
@@ -257,107 +268,36 @@ async fn process_url(
 }
 
 fn update_error_stats(error_stats: &ErrorStats, error: &reqwest::Error) {
-    let mut counts = error_stats.counts.lock().unwrap();
     if error.is_connect() {
-        counts.connection_refused += 1;
-    } else if error.is_timeout() {
-        counts.dns_error += 1;
-    } else if error.to_string().contains("failed to lookup address information") {
-        counts.dns_error += 1;
+        error_stats.connection_refused.fetch_add(1, Ordering::SeqCst);
+    } else if error.is_timeout() || error.to_string().contains("failed to lookup address information") {
+        error_stats.dns_error.fetch_add(1, Ordering::SeqCst);
     } else {
-        counts.other_errors += 1;
+        error_stats.other_errors.fetch_add(1, Ordering::SeqCst);
     }
 }
 
 fn update_title_extract_error(error_stats: &ErrorStats) {
-    let mut counts = error_stats.counts.lock().unwrap();
-    counts.title_extract_error += 1;
+    error_stats.title_extract_error.fetch_add(1, Ordering::SeqCst);
 }
 
 fn extract_domain(extractor: &TldExtractor, url: &str) -> String {
-    match extractor.extract(url) {
+    return match extractor.extract(url) {
         Ok(extract) => {
             if let Some(main_domain) = extract.domain {
-                return format!(
+                format!(
                     "{}.{}",
                     main_domain.to_lowercase(),
                     extract.suffix.unwrap_or_default()
-                );
+                )
             } else {
                 // Domain not present in the URL, return an empty string
-                return "".to_string();
+                "".to_string()
             }
         }
         Err(err) => {
             error!("Error when extracting domain: {}", err);
-            return "".to_string();
+            "".to_string()
         }
-    }
-}
-
-fn get_status_description(status_code: u16) -> String {
-    match status_code {
-        100 => "Continue".to_string(),
-        101 => "Switching Protocols".to_string(),
-        102 => "Processing".to_string(),
-        103 => "Early Hints".to_string(),
-        200 => "OK".to_string(),
-        201 => "Created".to_string(),
-        202 => "Accepted".to_string(),
-        203 => "Non-Authoritative Information".to_string(),
-        204 => "No Content".to_string(),
-        205 => "Reset Content".to_string(),
-        206 => "Partial Content".to_string(),
-        207 => "Multi-Status".to_string(),
-        208 => "Already Reported".to_string(),
-        226 => "IM Used".to_string(),
-        300 => "Multiple Choices".to_string(),
-        301 => "Moved Permanently".to_string(),
-        302 => "Found".to_string(),
-        303 => "See Other".to_string(),
-        304 => "Not Modified".to_string(),
-        305 => "Use Proxy".to_string(),
-        307 => "Temporary Redirect".to_string(),
-        308 => "Permanent Redirect".to_string(),
-        400 => "Bad Request".to_string(),
-        401 => "Unauthorized".to_string(),
-        402 => "Payment Required".to_string(),
-        403 => "Forbidden".to_string(),
-        404 => "Not Found".to_string(),
-        405 => "Method Not Allowed".to_string(),
-        406 => "Not Acceptable".to_string(),
-        407 => "Proxy Authentication Required".to_string(),
-        408 => "Request Timeout".to_string(),
-        409 => "Conflict".to_string(),
-        410 => "Gone".to_string(),
-        411 => "Length Required".to_string(),
-        412 => "Precondition Failed".to_string(),
-        413 => "Content Too Large".to_string(),
-        414 => "URI Too Long".to_string(),
-        415 => "Unsupported Media Type".to_string(),
-        416 => "Range Not Satisfiable".to_string(),
-        417 => "Expectation Failed".to_string(),
-        421 => "Misdirected Request".to_string(),
-        422 => "Unprocessable Content".to_string(),
-        423 => "Locked".to_string(),
-        424 => "Failed Dependency".to_string(),
-        425 => "Too Early".to_string(),
-        426 => "Upgrade Required".to_string(),
-        428 => "Precondition Required".to_string(),
-        429 => "Too Many Requests".to_string(),
-        431 => "Request Header Fields Too Large".to_string(),
-        451 => "Unavailable For Legal Reasons".to_string(),
-        500 => "Internal Server Error".to_string(),
-        501 => "Not Implemented".to_string(),
-        502 => "Bad Gateway".to_string(),
-        503 => "Service Unavailable".to_string(),
-        504 => "Gateway Timeout".to_string(),
-        505 => "HTTP Version Not Supported".to_string(),
-        506 => "Variant Also Negotiates".to_string(),
-        507 => "Insufficient Storage".to_string(),
-        508 => "Loop Detected".to_string(),
-        510 => "Not Extended".to_string(),
-        511 => "Network Authentication Required".to_string(),
-        _ => format!("Status code: {}", status_code),
     }
 }
