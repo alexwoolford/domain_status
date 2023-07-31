@@ -13,7 +13,6 @@ use futures::StreamExt;
 use log::error;
 use log::info;
 use reqwest::ClientBuilder;
-// use rusqlite::Result;
 use scraper::{Html, Selector};
 use simplelog::{ColorChoice, Config, LevelFilter, TerminalMode, TermLogger};
 use sqlx::{Pool, Sqlite, SqlitePool};
@@ -27,8 +26,8 @@ const LOG_INTERVAL: usize = 100;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-name = "url_checker",
-about = "Checks a list of URLs for their status and redirection."
+    name = "url_checker",
+    about = "Checks a list of URLs for their status and redirection."
 )]
 struct Opt {
     /// File to read
@@ -56,21 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let semaphore = init_semaphore(SEMAPHORE_COUNT);
     let client = init_client().await?;
-    let pool = init_db_pool().await?;
     let extractor = init_extractor();
 
-    sqlx::query("CREATE TABLE IF NOT EXISTS url_status (
-        id INTEGER PRIMARY KEY,
-        domain TEXT NOT NULL,
-        final_domain TEXT NOT NULL,
-        status INTEGER NOT NULL,
-        status_description TEXT NOT NULL,
-        response_time NUMERIC(10, 2),
-        title TEXT NOT NULL,
-        timestamp TEXT NOT NULL
-    )")
-        .execute(pool.as_ref())
-        .await?;
+    let pool = init_db_pool().await?;
+    create_table(&pool).await?;
 
     let start_time = std::time::Instant::now();
     let mut count = 0;
@@ -115,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 extractor_clone,
                 error_stats_clone,
             )
-                .await
+            .await
         }));
 
         count += 1;
@@ -125,11 +113,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             processed_urls += count;
 
             info!(
-            "Processed {} lines in {:.2} seconds (~{:.2} lines/sec)",
-            processed_urls,
-            elapsed.as_secs_f64(),
-            _lines_per_sec
-        );
+                "Processed {} lines in {:.2} seconds (~{:.2} lines/sec)",
+                processed_urls,
+                elapsed.as_secs_f64(),
+                _lines_per_sec
+            );
             count = 0;
         }
     }
@@ -147,7 +135,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Connection Refused: {}",
         error_stats.connection_refused.load(Ordering::SeqCst)
     );
-    info!("DNS Errors: {}", error_stats.dns_error.load(Ordering::SeqCst));
+    info!(
+        "DNS Errors: {}",
+        error_stats.dns_error.load(Ordering::SeqCst)
+    );
     info!(
         "Other Errors: {}",
         error_stats.other_errors.load(Ordering::SeqCst)
@@ -190,15 +181,41 @@ async fn init_client() -> Result<Arc<reqwest::Client>, reqwest::Error> {
 async fn init_db_pool() -> Result<Arc<Pool<Sqlite>>, sqlx::Error> {
     let db_path = "./url_checker.db";
 
-    match OpenOptions::new().read(true).write(true).create_new(true).open(db_path) {
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(db_path)
+    {
         Ok(_) => info!("Database file created successfully."),
-        Err(ref e) if e.kind() == ErrorKind::AlreadyExists => info!("Database file already exists."),
+        Err(ref e) if e.kind() == ErrorKind::AlreadyExists => {
+            info!("Database file already exists.")
+        }
         Err(e) => panic!("Couldn't create database file: {:?}", e),
     }
 
     let pool = SqlitePool::connect(&*format!("sqlite:{}", db_path)).await?;
 
     Ok(Arc::new(pool))
+}
+
+async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS url_status (
+        id INTEGER PRIMARY KEY,
+        domain TEXT NOT NULL,
+        final_domain TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        status_description TEXT NOT NULL,
+        response_time NUMERIC(10, 2),
+        title TEXT NOT NULL,
+        timestamp INTEGER NOT NULL
+    )",
+    )
+        .execute(pool)
+        .await?;
+
+    Ok(())
 }
 
 fn init_extractor() -> Arc<TldExtractor> {
@@ -248,7 +265,7 @@ async fn process_url(
             let initial_domain = extract_domain(&extractor, &url);
             let final_domain = extract_domain(&extractor, &final_url);
 
-            let timestamp = chrono::Utc::now().to_rfc3339();
+            let timestamp = chrono::Utc::now().timestamp_millis();
 
             match sqlx::query(
                 "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -259,7 +276,7 @@ async fn process_url(
                 .bind(status_desc)
                 .bind(elapsed)
                 .bind(&title)
-                .bind(&timestamp)
+                .bind(timestamp)
                 .execute(pool.as_ref())
                 .await {
                 Ok(_) => (),
@@ -267,6 +284,7 @@ async fn process_url(
                     error!("Error when accessing the database: {}", e);
                 }
             }
+
         }
         Err(e) => {
             update_error_stats(&error_stats, &e);
@@ -276,8 +294,14 @@ async fn process_url(
 
 fn update_error_stats(error_stats: &ErrorStats, error: &reqwest::Error) {
     if error.is_connect() {
-        error_stats.connection_refused.fetch_add(1, Ordering::SeqCst);
-    } else if error.is_timeout() || error.to_string().contains("failed to lookup address information") {
+        error_stats
+            .connection_refused
+            .fetch_add(1, Ordering::SeqCst);
+    } else if error.is_timeout()
+        || error
+            .to_string()
+            .contains("failed to lookup address information")
+    {
         error_stats.dns_error.fetch_add(1, Ordering::SeqCst);
     } else {
         error_stats.other_errors.fetch_add(1, Ordering::SeqCst);
@@ -285,7 +309,9 @@ fn update_error_stats(error_stats: &ErrorStats, error: &reqwest::Error) {
 }
 
 fn update_title_extract_error(error_stats: &ErrorStats) {
-    error_stats.title_extract_error.fetch_add(1, Ordering::SeqCst);
+    error_stats
+        .title_extract_error
+        .fetch_add(1, Ordering::SeqCst);
 }
 
 fn extract_domain(extractor: &TldExtractor, url: &str) -> String {
@@ -308,3 +334,6 @@ fn extract_domain(extractor: &TldExtractor, url: &str) -> String {
         }
     };
 }
+
+#[cfg(test)]
+mod tests;

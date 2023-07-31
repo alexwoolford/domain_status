@@ -1,78 +1,53 @@
 # domain_status
-
-This is a multithreaded tool implemented in Rust for checking the status and redirection of a list of URLs. It provides
-performance monitoring, error handling, and stores the result in a SQLite database.
+This is a multithreaded tool implemented in Rust for checking the status and redirection of a list of URLs. It provides performance monitoring, error handling, and stores the result in a SQLite database.
 
 ## Features
-
-- Multithreading using tokio and futures.
-- Error handling for various types of issues such as connection refused, DNS errors, etc.
-- Extraction of domain from URLs using tldextract library.
-- Extraction and storage of the status, final domain after redirection, and title of the webpage.
-- Status updates for every 100 URLs processed.
-- Error summary at the end of the execution.
+Multithreading using tokio and futures for high-performance processing.
+Comprehensive error handling for various types of connection and DNS issues.
+Extraction of the domain from URLs using the tldextract library.
+Extraction and storage of critical data such as the status, final domain after redirection, and the title of the webpage.
+Regular status updates for every 100 URLs processed.
+Comprehensive error summary at the end of the execution for debugging and auditing purposes.
 
 ## Dependencies
-
-This program depends on several crates including:
-
-- futures
-- reqwest
-- rusqlite
-- scraper
-- std
-- log
-- structopt
-- tldextract
-- tokio
-- simplelog
+This program depends on several Rust crates, including but not limited to futures for asynchronous programming, reqwest for making HTTP requests, rusqlite for interacting with SQLite databases, scraper for web scraping, log for logging, structopt for command-line option parsing, tldextract for domain extraction, tokio for asynchronous I/O, and simplelog for simple and efficient logging.
 
 ## Usage
-
-Here, `file` is the name of the file containing the URLs to be checked.
+To use the tool, provide the file containing the list of URLs to be checked as a command-line argument when running the program. The program will then process each URL asynchronously and store the results in the database.
 
 ## Output
-
 The output of the program includes:
 
-- Logs for every 100 URLs processed, including the elapsed time and the average processing speed.
-- A summary of the errors encountered during execution.
+* Regular logs for every 100 URLs processed. These logs contain the total elapsed time and the average processing speed.
+* A comprehensive summary of the errors encountered during the execution.
 
-The results of the check are stored in a SQLite database in a table named `url_status`. Each entry in the table includes
-the following fields:
+The results of the check are stored in a SQLite database in a table named url_status. Each entry in the table includes the following fields:
 
-- `id` (integer)
-- `domain` (text)
-- `final_domain` (text)
-- `status` (integer)
-- `status_description` (text)
-- `response_time` (text)
-- `title` (text)
+* id (integer): A unique identifier for each entry.
+* domain (text): The original domain checked.
+* final_domain (text): The final domain after any redirections.
+* status (integer): The HTTP status code received.
+* status_description (text): The description of the HTTP status code.
+* response_time (numeric): The response time of the request.
+* title (text): The title of the webpage, if available.
+* timestamp (integer): The timestamp, in epoch millis, when the URL was processed.
 
 ## Errors
+The program keeps track of four types of errors during execution:
 
-The program keeps track of four types of errors:
-
-- `connection_refused`
-- `dns_error`
-- `title_extract_error`
-- `other_errors`
+* connection_refused: The connection was refused by the server.
+* dns_error: There was a DNS resolution issue.
+* title_extract_error: The title could not be extracted from the webpage.
+* other_errors: Any other errors encountered during execution.
 
 The error counts are output at the end of the program execution.
 
 ## Initialization
-
-The program initializes a logger, a semaphore, an HTTP client, a database connection pool, and a domain extractor.
+At the start of the program, several key components are initialized, such as a logger for logging, a semaphore for controlling concurrent tasks, an HTTP client for making requests, a database connection pool for managing SQLite database connections, and a domain extractor for extracting domains from URLs.
 
 ## Processing
+The processing of each URL is done in the process_url function. This function:
 
-Each URL is processed in the `process_url` function, which:
-
-- Sends a GET request to the URL.
-- Extracts the status, final URL after redirection, and the page title.
-- Stores these details in the `url_status` table in the database.
-
-## Note
-
-This program does not currently handle the possibility of failing to open the input file. It also does not handle the
-possibility of an HTTP request failing.
+* Sends a GET request to the URL.
+* Extracts important data such as the status, final URL after redirection, and the page title.
+* Stores these details in the database.
