@@ -1,8 +1,10 @@
 # domain_status
 
-This is a multithreaded tool implemented in Rust for checking the status and redirection of a list of URLs. It provides performance monitoring, error handling, and stores the result in a SQLite database.
+This is a multithreaded tool implemented in Rust for checking the status and redirection of a list of URLs. It provides
+performance monitoring, error handling, and stores the result in a SQLite database.
 
 ## Features
+
 - Multithreading using tokio and futures.
 - Error handling for various types of issues such as connection refused, DNS errors, etc.
 - Extraction of domain from URLs using tldextract library.
@@ -11,7 +13,9 @@ This is a multithreaded tool implemented in Rust for checking the status and red
 - Error summary at the end of the execution.
 
 ## Dependencies
+
 This program depends on several crates including:
+
 - futures
 - reqwest
 - rusqlite
@@ -30,10 +34,13 @@ Here, `file` is the name of the file containing the URLs to be checked.
 ## Output
 
 The output of the program includes:
+
 - Logs for every 100 URLs processed, including the elapsed time and the average processing speed.
 - A summary of the errors encountered during execution.
 
-The results of the check are stored in a SQLite database in a table named `url_status`. Each entry in the table includes the following fields:
+The results of the check are stored in a SQLite database in a table named `url_status`. Each entry in the table includes
+the following fields:
+
 - `id` (integer)
 - `domain` (text)
 - `final_domain` (text)
@@ -45,6 +52,7 @@ The results of the check are stored in a SQLite database in a table named `url_s
 ## Errors
 
 The program keeps track of four types of errors:
+
 - `connection_refused`
 - `dns_error`
 - `title_extract_error`
@@ -59,9 +67,12 @@ The program initializes a logger, a semaphore, an HTTP client, a database connec
 ## Processing
 
 Each URL is processed in the `process_url` function, which:
+
 - Sends a GET request to the URL.
 - Extracts the status, final URL after redirection, and the page title.
 - Stores these details in the `url_status` table in the database.
 
 ## Note
-This program does not currently handle the possibility of failing to open the input file. It also does not handle the possibility of an HTTP request failing.
+
+This program does not currently handle the possibility of failing to open the input file. It also does not handle the
+possibility of an HTTP request failing.

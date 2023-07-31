@@ -1,9 +1,11 @@
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use futures::stream::FuturesUnordered;
@@ -11,9 +13,10 @@ use futures::StreamExt;
 use log::error;
 use log::info;
 use reqwest::ClientBuilder;
-use rusqlite::{params, Result};
+// use rusqlite::Result;
 use scraper::{Html, Selector};
-use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
+use simplelog::{ColorChoice, Config, LevelFilter, TerminalMode, TermLogger};
+use sqlx::{Pool, Sqlite, SqlitePool};
 use structopt::StructOpt;
 use tldextract::{TldExtractor, TldOption};
 use tokio::sync::Semaphore;
@@ -24,8 +27,8 @@ const LOG_INTERVAL: usize = 100;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-    name = "url_checker",
-    about = "Checks a list of URLs for their status and redirection."
+name = "url_checker",
+about = "Checks a list of URLs for their status and redirection."
 )]
 struct Opt {
     /// File to read
@@ -53,15 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let semaphore = init_semaphore(SEMAPHORE_COUNT);
     let client = init_client().await?;
-    let pool = init_db_pool()?;
+    let pool = init_db_pool().await?;
     let extractor = init_extractor();
 
-    let pool_for_table = Arc::clone(&pool);
-
-    tokio::task::spawn_blocking(move || {
-        let conn = pool_for_table.get().unwrap();
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS url_status (
+    sqlx::query("CREATE TABLE IF NOT EXISTS url_status (
         id INTEGER PRIMARY KEY,
         domain TEXT NOT NULL,
         final_domain TEXT NOT NULL,
@@ -70,13 +68,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         response_time NUMERIC(10, 2),
         title TEXT NOT NULL,
         timestamp TEXT NOT NULL
-    )",
-            [],
-        )
-        .unwrap();
-    })
-    .await
-    .unwrap();
+    )")
+        .execute(pool.as_ref())
+        .await?;
 
     let start_time = std::time::Instant::now();
     let mut count = 0;
@@ -102,14 +96,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => continue,
         };
 
+        // Acquire the semaphore here, outside of the async block
+        let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
+
+        // Clone the variables here, before moving them into the async block
         let client_clone = Arc::clone(&client);
         let pool_clone = Arc::clone(&pool);
         let extractor_clone = Arc::clone(&extractor);
         let error_stats_clone = error_stats.clone();
-        let semaphore_clone = Arc::clone(&semaphore);
-
-        // Acquire the semaphore here, outside of the async block
-        let permit = semaphore_clone.acquire_owned().await.unwrap();
 
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
@@ -131,11 +125,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             processed_urls += count;
 
             info!(
-                "Processed {} lines in {:.2} seconds (~{:.2} lines/sec)",
-                processed_urls,
-                elapsed.as_secs_f64(),
-                _lines_per_sec
-            );
+            "Processed {} lines in {:.2} seconds (~{:.2} lines/sec)",
+            processed_urls,
+            elapsed.as_secs_f64(),
+            _lines_per_sec
+        );
             count = 0;
         }
     }
@@ -193,9 +187,17 @@ async fn init_client() -> Result<Arc<reqwest::Client>, reqwest::Error> {
     Ok(Arc::new(client))
 }
 
-fn init_db_pool() -> Result<Arc<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>, r2d2::Error> {
-    let manager = r2d2_sqlite::SqliteConnectionManager::file("url_checker.db");
-    let pool = r2d2::Pool::new(manager)?;
+async fn init_db_pool() -> Result<Arc<Pool<Sqlite>>, sqlx::Error> {
+    let db_path = "./url_checker.db";
+
+    match OpenOptions::new().read(true).write(true).create_new(true).open(db_path) {
+        Ok(_) => info!("Database file created successfully."),
+        Err(ref e) if e.kind() == ErrorKind::AlreadyExists => info!("Database file already exists."),
+        Err(e) => panic!("Couldn't create database file: {:?}", e),
+    }
+
+    let pool = SqlitePool::connect(&*format!("sqlite:{}", db_path)).await?;
+
     Ok(Arc::new(pool))
 }
 
@@ -203,10 +205,30 @@ fn init_extractor() -> Arc<TldExtractor> {
     Arc::new(TldExtractor::new(TldOption::default()))
 }
 
+fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
+    let parsed_html = Html::parse_document(html);
+
+    let selector = match Selector::parse("title") {
+        Ok(selector) => selector,
+        Err(_) => {
+            update_title_extract_error(error_stats);
+            return String::from("");
+        }
+    };
+
+    match parsed_html.select(&selector).next() {
+        Some(element) => element.inner_html(),
+        None => {
+            update_title_extract_error(error_stats);
+            String::from("")
+        }
+    }
+}
+
 async fn process_url(
     url: String,
     client: Arc<reqwest::Client>,
-    pool: Arc<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>,
+    pool: Arc<SqlitePool>,
     extractor: Arc<TldExtractor>,
     error_stats: ErrorStats,
 ) {
@@ -218,48 +240,33 @@ async fn process_url(
         Ok(response) => {
             let final_url = response.url().to_string();
             let status = response.status();
-            // let status_desc = get_status_description(status);
-
             let status_desc = status.canonical_reason().unwrap_or("Unknown Status Code");
 
             let body = response.text().await.unwrap_or_default();
+            let title = extract_title(&body, &error_stats);
 
-            match tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                let initial_domain = extract_domain(&extractor, &url);
-                let final_domain = extract_domain(&extractor, &final_url);
+            let initial_domain = extract_domain(&extractor, &url);
+            let final_domain = extract_domain(&extractor, &final_url);
 
-                let conn = pool.get().map_err(|e| anyhow::anyhow!("Failed to get connection from the pool: {}", e))?;
-                let document = Html::parse_document(&body);
-                let selector = Selector::parse("title").unwrap();
-                let title = document.select(&selector)
-                    .next()
-                    .map_or_else(|| {
-                        update_title_extract_error(&error_stats);
-                        "".to_string()
-                    }, |e| e.inner_html());
+            let timestamp = chrono::Utc::now().to_rfc3339();
 
-                let timestamp = chrono::Utc::now().to_rfc3339();
-
-                // Insert the result into the SQLite database
-                conn.execute(
-                    "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![initial_domain, final_domain, status.as_u16(), status_desc, elapsed, title, timestamp],
-                ).map_err(|e| anyhow::anyhow!("Error when writing to the database: {}", e))?;
-
-                Ok(())
-            }).await {
-                Ok(result) => {
-                    match result {
-                        Ok(_) => (),
-                        Err(e) => {
-                            error!("Error when accessing the database: {}", e);
-                        }
-                    }
-                }
+            match sqlx::query(
+                "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            )
+                .bind(&initial_domain)
+                .bind(&final_domain)
+                .bind(status.as_u16())
+                .bind(status_desc)
+                .bind(elapsed)
+                .bind(&title)
+                .bind(&timestamp)
+                .execute(pool.as_ref())
+                .await {
+                Ok(_) => (),
                 Err(e) => {
                     error!("Error when accessing the database: {}", e);
                 }
-            };
+            }
         }
         Err(e) => {
             update_error_stats(&error_stats, &e);
@@ -299,5 +306,5 @@ fn extract_domain(extractor: &TldExtractor, url: &str) -> String {
             error!("Error when extracting domain: {}", err);
             "".to_string()
         }
-    }
+    };
 }
