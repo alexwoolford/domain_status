@@ -25,19 +25,23 @@ use rand::Rng;
 use anyhow::Error;
 
 // constants
-const SEMAPHORE_COUNT: usize = 10000;
+const SEMAPHORE_COUNT: usize = 500;
 const LOG_INTERVAL: usize = 100;
 const TASK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-    name = "url_checker",
+    name = "domain_status",
     about = "Checks a list of URLs for their status and redirection."
 )]
 struct Opt {
     /// File to read
     #[structopt(parse(from_os_str))]
     file: PathBuf,
+
+    /// Error rate threshold
+    #[structopt(long, default_value = "60.0")]
+    error_rate: f64,
 }
 
 #[derive(Clone)]
@@ -53,14 +57,16 @@ struct ErrorRateLimiter {
     error_stats: ErrorStats,
     operation_count: Arc<AtomicUsize>,
     error_rate: Arc<AtomicUsize>,
+    error_rate_threshold: f64,
 }
 
 impl ErrorRateLimiter {
-    fn new(error_stats: ErrorStats) -> Self {
+    fn new(error_stats: ErrorStats, error_rate_threshold: f64) -> Self {
         ErrorRateLimiter {
             error_stats,
             operation_count: Arc::new(AtomicUsize::new(0)),
             error_rate: Arc::new(AtomicUsize::new(0)),
+            error_rate_threshold,
         }
     }
 
@@ -73,23 +79,25 @@ impl ErrorRateLimiter {
                 + self.error_stats.other_errors.load(Ordering::SeqCst)
                 + self.error_stats.title_extract_error.load(Ordering::SeqCst);
 
-            let error_rate = (total_errors as f64 / self.operation_count.load(Ordering::SeqCst) as f64) * 100.0;
+            let error_rate = (total_errors as f64 / f64::max(total_errors as f64, self.operation_count.load(Ordering::SeqCst) as f64)) * 100.0;
+
             self.error_rate.store(error_rate as usize, Ordering::SeqCst);
 
-            if error_rate > 5.0 {  // change this to adjust the error rate threshold
-            // increase backoff time
-            warn!("Throttled; error rate of {}% has exceeded the set threshold. There were {} errors out of {} operations. Increasing backoff time.",
-    error_rate, total_errors, self.operation_count.load(Ordering::SeqCst));
+            if error_rate > self.error_rate_threshold {
+                // increase backoff time
                 let sleep_duration = Duration::from_secs_f64((error_rate / 5.0).max(1.0));
+                warn!("Throttled; error rate of {:.2}% has exceeded the set threshold. There were {} errors out of {} operations. Backoff time is {:.2} seconds.",
+            error_rate, total_errors, self.operation_count.load(Ordering::SeqCst), sleep_duration.as_secs_f64());
                 tokio::time::sleep(sleep_duration).await;
             }
-
         }
     }
+
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+
     init_logger()?;
 
     let opt = Opt::from_args();
@@ -114,9 +122,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         title_extract_error: Arc::new(AtomicUsize::new(0)),
         other_errors: Arc::new(AtomicUsize::new(0)),
     };
-
-    let rate_limiter = ErrorRateLimiter::new(error_stats.clone());
-
+    
+    let rate_limiter = ErrorRateLimiter::new(error_stats.clone(), opt.error_rate);
     let completed_urls = Arc::new(AtomicUsize::new(0));
 
     for line in reader.lines() {

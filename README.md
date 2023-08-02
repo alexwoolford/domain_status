@@ -12,8 +12,32 @@ Comprehensive error summary at the end of the execution for debugging and auditi
 ## Dependencies
 This program depends on several Rust crates, including but not limited to futures for asynchronous programming, reqwest for making HTTP requests, rusqlite for interacting with SQLite databases, scraper for web scraping, log for logging, structopt for command-line option parsing, tldextract for domain extraction, tokio for asynchronous I/O, and simplelog for simple and efficient logging.
 
+## Building
+This project uses Cargo, the Rust package manager, for building and dependency management.
+
+To build the project, navigate to the project's root directory and use the following command:
+
+    cargo build --release
+
+This will create an executable in the `./target/release/` directory.
+
 ## Usage
-To use the tool, provide the file containing the list of URLs to be checked as a command-line argument when running the program. The program will then process each URL asynchronously and store the results in the database.
+To use the tool, provide the file containing the list of URLs to be checked as a command-line argument when running the program. For instance:
+
+    domain_status urls.txt
+
+Where `urls.txt` is a plain text file containing one URL per line, like so:
+
+    https://example1.com
+    https://example2.com
+
+The program will process each URL asynchronously and store the results in the database.
+
+You can also set an optional error-rate threshold using the `--error-rate` flag, like so:
+
+    domain_status urls.txt --error-rate 60 
+
+This sets an error-rate threshold of 60%. If the error-rate exceeds this threshold, the program will start to throttle the processing, slowing down the rate at which URLs are checked.
 
 ## Output
 The output of the program includes:
