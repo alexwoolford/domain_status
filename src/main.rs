@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use log::error;
+use log::{error, warn};
 use log::info;
 use reqwest::ClientBuilder;
 use scraper::{Html, Selector};
@@ -25,9 +25,9 @@ use rand::Rng;
 use anyhow::Error;
 
 // constants
-const SEMAPHORE_COUNT: usize = 100;
+const SEMAPHORE_COUNT: usize = 10000;
 const LOG_INTERVAL: usize = 100;
-const TASK_TIMEOUT: Duration = Duration::from_secs(30);
+const TASK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -48,6 +48,46 @@ struct ErrorStats {
     other_errors: Arc<AtomicUsize>,
 }
 
+#[derive(Clone)]
+struct ErrorRateLimiter {
+    error_stats: ErrorStats,
+    operation_count: Arc<AtomicUsize>,
+    error_rate: Arc<AtomicUsize>,
+}
+
+impl ErrorRateLimiter {
+    fn new(error_stats: ErrorStats) -> Self {
+        ErrorRateLimiter {
+            error_stats,
+            operation_count: Arc::new(AtomicUsize::new(0)),
+            error_rate: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    async fn allow_operation(&self) {
+        self.operation_count.fetch_add(1, Ordering::SeqCst);
+
+        if self.operation_count.load(Ordering::SeqCst) % LOG_INTERVAL == 0 {
+            let total_errors = self.error_stats.connection_refused.load(Ordering::SeqCst)
+                + self.error_stats.dns_error.load(Ordering::SeqCst)
+                + self.error_stats.other_errors.load(Ordering::SeqCst)
+                + self.error_stats.title_extract_error.load(Ordering::SeqCst);
+
+            let error_rate = (total_errors as f64 / self.operation_count.load(Ordering::SeqCst) as f64) * 100.0;
+            self.error_rate.store(error_rate as usize, Ordering::SeqCst);
+
+            if error_rate > 5.0 {  // change this to adjust the error rate threshold
+            // increase backoff time
+            warn!("Throttled; error rate of {}% has exceeded the set threshold. There were {} errors out of {} operations. Increasing backoff time.",
+    error_rate, total_errors, self.operation_count.load(Ordering::SeqCst));
+                let sleep_duration = Duration::from_secs_f64((error_rate / 5.0).max(1.0));
+                tokio::time::sleep(sleep_duration).await;
+            }
+
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logger()?;
@@ -66,9 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     create_table(&pool).await?;
 
     let start_time = std::time::Instant::now();
-    let mut count = 0;
     let log_interval = LOG_INTERVAL;
-    let mut processed_urls = 0;
 
     let error_stats = ErrorStats {
         connection_refused: Arc::new(AtomicUsize::new(0)),
@@ -76,6 +114,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         title_extract_error: Arc::new(AtomicUsize::new(0)),
         other_errors: Arc::new(AtomicUsize::new(0)),
     };
+
+    let rate_limiter = ErrorRateLimiter::new(error_stats.clone());
+
+    let completed_urls = Arc::new(AtomicUsize::new(0));
 
     for line in reader.lines() {
         let url = match line {
@@ -89,6 +131,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => continue,
         };
 
+        rate_limiter.allow_operation().await;
+
         // Acquire the semaphore here, outside of the async block
         let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
 
@@ -97,6 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pool_clone = Arc::clone(&pool);
         let extractor_clone = Arc::clone(&extractor);
         let error_stats_clone = error_stats.clone();
+        let completed_urls_clone = Arc::clone(&completed_urls);
 
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
@@ -108,51 +153,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 extractor_clone,
                 error_stats_clone,
             )).await {
-                Ok(_) => {},
+                Ok(_) => {
+                    completed_urls_clone.fetch_add(1, Ordering::SeqCst);
+
+                    if completed_urls_clone.load(Ordering::SeqCst) % log_interval == 0 {
+                        let elapsed = start_time.elapsed();
+                        let completed = completed_urls_clone.load(Ordering::SeqCst);
+                        info!(
+                        "Processed {} lines in {:.2} seconds (~{:.2} lines/sec)",
+                        completed,
+                        elapsed.as_secs_f64(),
+                        completed as f64 / elapsed.as_secs_f64()
+                    );
+                    }
+                },
                 Err(_) => {},
             }
 
         }));
 
-        count += 1;
-        if count % log_interval == 0 {
-            let elapsed = start_time.elapsed();
-            let _lines_per_sec = processed_urls as f64 / elapsed.as_secs_f64();
-            processed_urls += count;
-
-            info!(
-                "Processed {} lines in {:.2} seconds (~{:.2} lines/sec)",
-                processed_urls,
-                elapsed.as_secs_f64(),
-                _lines_per_sec
-            );
-            count = 0;
-        }
     }
 
     while let Some(_) = tasks.next().await {}
 
-    if count > 0 {
-        processed_urls += count;
-        let elapsed = start_time.elapsed();
-        let _lines_per_sec = processed_urls as f64 / elapsed.as_secs_f64();
-    }
-
     info!("Error Summary:");
     info!(
-        "Connection Refused: {}",
+        "   Connection Refused: {}",
         error_stats.connection_refused.load(Ordering::SeqCst)
     );
     info!(
-        "DNS Errors: {}",
+        "   DNS Errors: {}",
         error_stats.dns_error.load(Ordering::SeqCst)
     );
     info!(
-        "Other Errors: {}",
+        "   Other Errors: {}",
         error_stats.other_errors.load(Ordering::SeqCst)
     );
     info!(
-        "Title extract error: {}",
+        "   Title extract error: {}",
         error_stats.title_extract_error.load(Ordering::SeqCst)
     );
 
