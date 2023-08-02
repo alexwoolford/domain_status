@@ -1,8 +1,10 @@
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::future::Future;
 use std::io::{BufRead, BufReader};
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -19,10 +21,13 @@ use sqlx::{Pool, Sqlite, SqlitePool};
 use structopt::StructOpt;
 use tldextract::{TldExtractor, TldOption};
 use tokio::sync::Semaphore;
+use rand::Rng;
+use anyhow::Error;
 
 // constants
 const SEMAPHORE_COUNT: usize = 100;
 const LOG_INTERVAL: usize = 100;
+const TASK_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -96,14 +101,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
 
-            process_url(
+            match tokio::time::timeout(TASK_TIMEOUT, process_url(
                 url,
                 client_clone,
                 pool_clone,
                 extractor_clone,
                 error_stats_clone,
-            )
-            .await
+            )).await {
+                Ok(_) => {},
+                Err(_) => {},
+            }
+
         }));
 
         count += 1;
@@ -242,6 +250,11 @@ fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
     }
 }
 
+fn jitter(duration: Duration) -> Duration {
+    let jitter = rand::thread_rng().gen_range(0..100);
+    duration + Duration::from_millis(jitter)
+}
+
 async fn process_url(
     url: String,
     client: Arc<reqwest::Client>,
@@ -249,46 +262,68 @@ async fn process_url(
     extractor: Arc<TldExtractor>,
     error_stats: ErrorStats,
 ) {
+    let retry_strategy = tokio_retry::strategy::ExponentialBackoff::from_millis(500)
+        .map(jitter)  // add jitter to prevent thundering herd problem
+        .take(5);
+
     let start_time = std::time::Instant::now();
-    let res = client.get(&url).send().await;
-    let elapsed = start_time.elapsed().as_secs_f64();
 
-    match res {
-        Ok(response) => {
-            let final_url = response.url().to_string();
-            let status = response.status();
-            let status_desc = status.canonical_reason().unwrap_or("Unknown Status Code");
+    let future: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> = Box::pin(tokio_retry::Retry::spawn(retry_strategy, move || {
+        let client = client.clone();
+        let url = url.clone();
+        let pool = pool.clone();
+        let extractor = extractor.clone();
+        let error_stats = error_stats.clone();
 
-            let body = response.text().await.unwrap_or_default();
-            let title = extract_title(&body, &error_stats);
+        async move {
+            let res = client.get(&url).send().await;
 
-            let initial_domain = extract_domain(&extractor, &url);
-            let final_domain = extract_domain(&extractor, &final_url);
+            let elapsed = start_time.elapsed().as_secs_f64();
 
-            let timestamp = chrono::Utc::now().timestamp_millis();
+            match res {
+                Ok(response) => {
+                    let final_url = response.url().to_string();
+                    let status = response.status();
+                    let status_desc = status.canonical_reason().unwrap_or("Unknown Status Code");
 
-            match sqlx::query(
-                "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
-            )
-                .bind(&initial_domain)
-                .bind(&final_domain)
-                .bind(status.as_u16())
-                .bind(status_desc)
-                .bind(elapsed)
-                .bind(&title)
-                .bind(timestamp)
-                .execute(pool.as_ref())
-                .await {
-                Ok(_) => (),
+                    let body = response.text().await.unwrap_or_default();
+                    let title = extract_title(&body, &error_stats);
+
+                    let initial_domain = extract_domain(&extractor, &url);
+                    let final_domain = extract_domain(&extractor, &final_url);
+
+                    let timestamp = chrono::Utc::now().timestamp_millis();
+
+                    match sqlx::query(
+                        "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                    )
+                        .bind(&initial_domain)
+                        .bind(&final_domain)
+                        .bind(status.as_u16())
+                        .bind(status_desc)
+                        .bind(elapsed)
+                        .bind(&title)
+                        .bind(timestamp)
+                        .execute(pool.as_ref())
+                        .await {
+                        Ok(_) => Ok(()),
+                        Err(e) => {
+                            error!("Error when accessing the database: {}", e);
+                            Err(e.into())
+                        }
+                    }
+                }
                 Err(e) => {
-                    error!("Error when accessing the database: {}", e);
+                    update_error_stats(&error_stats, &e);
+                    Err(e.into())
                 }
             }
+        }
+    }));
 
-        }
-        Err(e) => {
-            update_error_stats(&error_stats, &e);
-        }
+    match future.await {
+        Ok(_) => (),
+        Err(e) => error!("Error after retries: {}", e),
     }
 }
 
