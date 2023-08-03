@@ -249,10 +249,16 @@ async fn init_db_pool() -> Result<Arc<Pool<Sqlite>>, sqlx::Error> {
 
     let pool = SqlitePool::connect(&*format!("sqlite:{}", db_path)).await?;
 
+    // Enable WAL mode
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(&pool)
+        .await?;
+
     Ok(Arc::new(pool))
 }
 
 async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS url_status (
         id INTEGER PRIMARY KEY,
