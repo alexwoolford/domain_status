@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anyhow::Error;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, warn};
@@ -20,14 +21,14 @@ use simplelog::{ColorChoice, Config, LevelFilter, TerminalMode, TermLogger};
 use sqlx::{Pool, Sqlite, SqlitePool};
 use structopt::StructOpt;
 use tldextract::{TldExtractor, TldOption};
-use tokio_retry::strategy::{ExponentialBackoff};
 use tokio::sync::Semaphore;
-use anyhow::Error;
+use tokio_retry::strategy::ExponentialBackoff;
 
 // constants
-const SEMAPHORE_COUNT: usize = 500;
-const LOG_INTERVAL: usize = 100;
-const TASK_TIMEOUT: Duration = Duration::from_secs(10);
+const SEMAPHORE_LIMIT: usize = 500;
+const LOGGING_INTERVAL: usize = 100;
+const URL_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
+
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -73,7 +74,7 @@ impl ErrorRateLimiter {
     async fn allow_operation(&self) {
         self.operation_count.fetch_add(1, Ordering::SeqCst);
 
-        if self.operation_count.load(Ordering::SeqCst) % LOG_INTERVAL == 0 {
+        if self.operation_count.load(Ordering::SeqCst) % LOGGING_INTERVAL == 0 {
             let total_errors = self.error_stats.connection_refused.load(Ordering::SeqCst)
                 + self.error_stats.dns_error.load(Ordering::SeqCst)
                 + self.error_stats.other_errors.load(Ordering::SeqCst)
@@ -106,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut tasks = FuturesUnordered::new();
 
-    let semaphore = init_semaphore(SEMAPHORE_COUNT);
+    let semaphore = init_semaphore(SEMAPHORE_LIMIT);
 
     let pool = init_db_pool().await?;
     let client = init_client().await?;
@@ -115,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     create_table(&pool).await?;
 
     let start_time = std::time::Instant::now();
-    let log_interval = LOG_INTERVAL;
+    let log_interval = LOGGING_INTERVAL;
 
     let error_stats = ErrorStats {
         connection_refused: Arc::new(AtomicUsize::new(0)),
@@ -136,7 +137,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     line
                 }
             }
-            Err(_) => continue,
+            Err(e) => {
+                warn!("Failed to read line from input file: {}", e);
+                continue;
+            }
+
         };
 
         rate_limiter.allow_operation().await;
@@ -154,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
 
-            match tokio::time::timeout(TASK_TIMEOUT, process_url(
+            match tokio::time::timeout(URL_PROCESSING_TIMEOUT, process_url(
                 url,
                 client_clone,
                 pool_clone,
