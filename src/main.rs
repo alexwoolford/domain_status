@@ -20,8 +20,8 @@ use simplelog::{ColorChoice, Config, LevelFilter, TerminalMode, TermLogger};
 use sqlx::{Pool, Sqlite, SqlitePool};
 use structopt::StructOpt;
 use tldextract::{TldExtractor, TldOption};
+use tokio_retry::strategy::{ExponentialBackoff};
 use tokio::sync::Semaphore;
-use rand::Rng;
 use anyhow::Error;
 
 // constants
@@ -107,10 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tasks = FuturesUnordered::new();
 
     let semaphore = init_semaphore(SEMAPHORE_COUNT);
+
+    let pool = init_db_pool().await?;
     let client = init_client().await?;
     let extractor = init_extractor();
 
-    let pool = init_db_pool().await?;
     create_table(&pool).await?;
 
     let start_time = std::time::Instant::now();
@@ -122,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         title_extract_error: Arc::new(AtomicUsize::new(0)),
         other_errors: Arc::new(AtomicUsize::new(0)),
     };
-    
+
     let rate_limiter = ErrorRateLimiter::new(error_stats.clone(), opt.error_rate);
     let completed_urls = Arc::new(AtomicUsize::new(0));
 
@@ -301,11 +302,6 @@ fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
     }
 }
 
-fn jitter(duration: Duration) -> Duration {
-    let jitter = rand::thread_rng().gen_range(0..100);
-    duration + Duration::from_millis(jitter)
-}
-
 async fn process_url(
     url: String,
     client: Arc<reqwest::Client>,
@@ -313,9 +309,7 @@ async fn process_url(
     extractor: Arc<TldExtractor>,
     error_stats: ErrorStats,
 ) {
-    let retry_strategy = tokio_retry::strategy::ExponentialBackoff::from_millis(500)
-        .map(jitter)  // add jitter to prevent thundering herd problem
-        .take(5);
+    let retry_strategy = get_retry_strategy();
 
     let start_time = std::time::Instant::now();
 
@@ -326,55 +320,93 @@ async fn process_url(
         let extractor = extractor.clone();
         let error_stats = error_stats.clone();
 
-        async move {
-            let res = client.get(&url).send().await;
-
-            let elapsed = start_time.elapsed().as_secs_f64();
-
-            match res {
-                Ok(response) => {
-                    let final_url = response.url().to_string();
-                    let status = response.status();
-                    let status_desc = status.canonical_reason().unwrap_or("Unknown Status Code");
-
-                    let body = response.text().await.unwrap_or_default();
-                    let title = extract_title(&body, &error_stats);
-
-                    let initial_domain = extract_domain(&extractor, &url);
-                    let final_domain = extract_domain(&extractor, &final_url);
-
-                    let timestamp = chrono::Utc::now().timestamp_millis();
-
-                    match sqlx::query(
-                        "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
-                    )
-                        .bind(&initial_domain)
-                        .bind(&final_domain)
-                        .bind(status.as_u16())
-                        .bind(status_desc)
-                        .bind(elapsed)
-                        .bind(&title)
-                        .bind(timestamp)
-                        .execute(pool.as_ref())
-                        .await {
-                        Ok(_) => Ok(()),
-                        Err(e) => {
-                            error!("Error when accessing the database: {}", e);
-                            Err(e.into())
-                        }
-                    }
-                }
-                Err(e) => {
-                    update_error_stats(&error_stats, &e);
-                    Err(e.into())
-                }
-            }
-        }
+        handle_http_request(client, url, pool, extractor, error_stats, start_time)
     }));
 
     match future.await {
         Ok(_) => (),
         Err(e) => error!("Error after retries: {}", e),
+    }
+}
+
+fn get_retry_strategy() -> ExponentialBackoff {
+    ExponentialBackoff::from_millis(1000)
+        .factor(2)                // Double the delay with each retry
+        .max_delay(Duration::from_secs(20)) // Maximum delay of 20 seconds
+}
+
+async fn handle_http_request(
+    client: Arc<reqwest::Client>,
+    url: String,
+    pool: Arc<SqlitePool>,
+    extractor: Arc<TldExtractor>,
+    error_stats: ErrorStats,
+    start_time: std::time::Instant,
+) -> Result<(), Error> {
+    let res = client.get(&url).send().await;
+
+    let elapsed = start_time.elapsed().as_secs_f64();
+
+    match res {
+        Ok(response) => {
+            futures::future::Either::Left(handle_response(response, &url, pool, extractor, error_stats, elapsed))
+        }
+        Err(e) => {
+            update_error_stats(&error_stats, &e);
+            futures::future::Either::Right(futures::future::ready(Err(e.into())))
+        }
+    }.await
+}
+
+async fn handle_response(
+    response: reqwest::Response,
+    url: &str,
+    pool: Arc<SqlitePool>,
+    extractor: Arc<TldExtractor>,
+    error_stats: ErrorStats,
+    elapsed: f64,
+) -> Result<(), Error> {
+    let final_url = response.url().to_string();
+    let status = response.status();
+    let status_desc = status.canonical_reason().unwrap_or_else(|| "Unknown Status Code");
+
+    let title = response.text().await.and_then(|body| Ok(extract_title(&body, &error_stats))).unwrap_or_default();
+
+    let initial_domain = extract_domain(&extractor, &url);
+    let final_domain = extract_domain(&extractor, &final_url);
+
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, timestamp, &pool).await
+}
+
+async fn update_database(
+    initial_domain: &str,
+    final_domain: &str,
+    status: reqwest::StatusCode,
+    status_desc: &str,
+    elapsed: f64,
+    title: &str,
+    timestamp: i64,
+    pool: &SqlitePool,
+) -> Result<(), Error> {
+    match sqlx::query(
+        "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+        .bind(&initial_domain)
+        .bind(&final_domain)
+        .bind(status.as_u16())
+        .bind(status_desc)
+        .bind(elapsed)
+        .bind(&title)
+        .bind(timestamp)
+        .execute(pool)
+        .await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            error!("Error when accessing the database: {}", e);
+            Err(e.into())
+        }
     }
 }
 

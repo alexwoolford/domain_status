@@ -75,3 +75,21 @@ The processing of each URL is done in the process_url function. This function:
 * Sends a GET request to the URL.
 * Extracts important data such as the status, final URL after redirection, and the page title.
 * Stores these details in the database.
+
+## System Configuration Considerations
+
+When processing a large file, you might encounter the following error:
+
+    Error when accessing the database: error returned from database: (code: 14) unable to open database file
+
+This error can occur when the system's limit on the maximum number of open file descriptors (ulimit) is too low for the number of concurrent tasks the program is attempting to perform.
+
+The workaround for this issue is to increase the ulimit on your Linux host. You can use the following command to check the current ulimit:
+
+    ulimit -n
+
+If the value is a small number, like the default value of 1024, you might need to increase it. As an example, you can set it to 32768 like so:
+
+    ulimit -n 32768
+
+Please note that this command only increases the ulimit for the current session. If you want to increase the ulimit system-wide and permanently, you would need to modify some system files.
