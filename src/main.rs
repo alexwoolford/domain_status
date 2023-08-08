@@ -1,104 +1,28 @@
 use std::fs::File;
-use std::fs::OpenOptions;
-use std::future::Future;
 use std::io::{BufRead, BufReader};
-use std::io::ErrorKind;
-use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
-use anyhow::Error;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use log::{error, warn};
+use log::warn;
 use log::info;
-use reqwest::ClientBuilder;
-use scraper::{Html, Selector};
-use simplelog::{ColorChoice, Config, LevelFilter, TerminalMode, TermLogger};
-use sqlx::{Pool, Sqlite, SqlitePool};
 use structopt::StructOpt;
-use tldextract::{TldExtractor, TldOption};
-use tokio::sync::Semaphore;
-use tokio_retry::strategy::ExponentialBackoff;
 
-// constants
-const SEMAPHORE_LIMIT: usize = 500;
-const LOGGING_INTERVAL: usize = 100;
-const URL_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
+use config::*;
+use database::*;
+use initialization::*;
+use utils::*;
 
-
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "domain_status",
-    about = "Checks a list of URLs for their status and redirection."
-)]
-struct Opt {
-    /// File to read
-    #[structopt(parse(from_os_str))]
-    file: PathBuf,
-
-    /// Error rate threshold
-    #[structopt(long, default_value = "60.0")]
-    error_rate: f64,
-}
-
-#[derive(Clone)]
-struct ErrorStats {
-    connection_refused: Arc<AtomicUsize>,
-    dns_error: Arc<AtomicUsize>,
-    title_extract_error: Arc<AtomicUsize>,
-    other_errors: Arc<AtomicUsize>,
-}
-
-#[derive(Clone)]
-struct ErrorRateLimiter {
-    error_stats: ErrorStats,
-    operation_count: Arc<AtomicUsize>,
-    error_rate: Arc<AtomicUsize>,
-    error_rate_threshold: f64,
-}
-
-impl ErrorRateLimiter {
-    fn new(error_stats: ErrorStats, error_rate_threshold: f64) -> Self {
-        ErrorRateLimiter {
-            error_stats,
-            operation_count: Arc::new(AtomicUsize::new(0)),
-            error_rate: Arc::new(AtomicUsize::new(0)),
-            error_rate_threshold,
-        }
-    }
-
-    async fn allow_operation(&self) {
-        self.operation_count.fetch_add(1, Ordering::SeqCst);
-
-        if self.operation_count.load(Ordering::SeqCst) % LOGGING_INTERVAL == 0 {
-            let total_errors = self.error_stats.connection_refused.load(Ordering::SeqCst)
-                + self.error_stats.dns_error.load(Ordering::SeqCst)
-                + self.error_stats.other_errors.load(Ordering::SeqCst)
-                + self.error_stats.title_extract_error.load(Ordering::SeqCst);
-
-            let error_rate = (total_errors as f64 / f64::max(total_errors as f64, self.operation_count.load(Ordering::SeqCst) as f64)) * 100.0;
-
-            self.error_rate.store(error_rate as usize, Ordering::SeqCst);
-
-            if error_rate > self.error_rate_threshold {
-                // increase backoff time
-                let sleep_duration = Duration::from_secs_f64((error_rate / 5.0).max(1.0));
-                warn!("Throttled; error rate of {:.2}% has exceeded the set threshold. There were {} errors out of {} operations. Backoff time is {:.2} seconds.",
-            error_rate, total_errors, self.operation_count.load(Ordering::SeqCst), sleep_duration.as_secs_f64());
-                tokio::time::sleep(sleep_duration).await;
-            }
-        }
-    }
-
-}
+mod config;
+mod initialization;
+mod database;
+mod utils;
+mod error_handling;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     init_logger()?;
 
     let opt = Opt::from_args();
@@ -141,7 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 warn!("Failed to read line from input file: {}", e);
                 continue;
             }
-
         };
 
         rate_limiter.allow_operation().await;
@@ -179,12 +102,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         completed as f64 / elapsed.as_secs_f64()
                     );
                     }
-                },
-                Err(_) => {},
+                }
+                Err(_) => {}
             }
-
         }));
-
     }
 
     while let Some(_) = tasks.next().await {}
@@ -208,254 +129,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Ok(())
-}
-
-fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
-    let term_logger = TermLogger::new(
-        LevelFilter::Info,
-        Config::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    );
-
-    // Leak the logger so that it lives for the entire duration of the program
-    let leaked_term_logger = Box::leak(term_logger);
-    log::set_logger(leaked_term_logger)?;
-    log::set_max_level(LevelFilter::Info);
-    Ok(())
-}
-
-fn init_semaphore(count: usize) -> Arc<Semaphore> {
-    Arc::new(Semaphore::new(count))
-}
-
-async fn init_client() -> Result<Arc<reqwest::Client>, reqwest::Error> {
-    let client = ClientBuilder::new()
-        .timeout(Duration::from_secs(10))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
-        .build()?;
-    Ok(Arc::new(client))
-}
-
-async fn init_db_pool() -> Result<Arc<Pool<Sqlite>>, sqlx::Error> {
-    let db_path = "./url_checker.db";
-
-    match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(db_path)
-    {
-        Ok(_) => info!("Database file created successfully."),
-        Err(ref e) if e.kind() == ErrorKind::AlreadyExists => {
-            info!("Database file already exists.")
-        }
-        Err(e) => panic!("Couldn't create database file: {:?}", e),
-    }
-
-    let pool = SqlitePool::connect(&*format!("sqlite:{}", db_path)).await?;
-
-    // Enable WAL mode
-    sqlx::query("PRAGMA journal_mode=WAL")
-        .execute(&pool)
-        .await?;
-
-    Ok(Arc::new(pool))
-}
-
-async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS url_status (
-        id INTEGER PRIMARY KEY,
-        domain TEXT NOT NULL,
-        final_domain TEXT NOT NULL,
-        status INTEGER NOT NULL,
-        status_description TEXT NOT NULL,
-        response_time NUMERIC(10, 2),
-        title TEXT NOT NULL,
-        timestamp INTEGER NOT NULL
-    )",
-    )
-        .execute(pool)
-        .await?;
-
-    Ok(())
-}
-
-fn init_extractor() -> Arc<TldExtractor> {
-    Arc::new(TldExtractor::new(TldOption::default()))
-}
-
-fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
-    let parsed_html = Html::parse_document(html);
-
-    let selector = match Selector::parse("title") {
-        Ok(selector) => selector,
-        Err(_) => {
-            update_title_extract_error(error_stats);
-            return String::from("");
-        }
-    };
-
-    match parsed_html.select(&selector).next() {
-        Some(element) => element.inner_html(),
-        None => {
-            update_title_extract_error(error_stats);
-            String::from("")
-        }
-    }
-}
-
-async fn process_url(
-    url: String,
-    client: Arc<reqwest::Client>,
-    pool: Arc<SqlitePool>,
-    extractor: Arc<TldExtractor>,
-    error_stats: ErrorStats,
-) {
-    let retry_strategy = get_retry_strategy();
-
-    let start_time = std::time::Instant::now();
-
-    let future: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> = Box::pin(tokio_retry::Retry::spawn(retry_strategy, move || {
-        let client = client.clone();
-        let url = url.clone();
-        let pool = pool.clone();
-        let extractor = extractor.clone();
-        let error_stats = error_stats.clone();
-
-        handle_http_request(client, url, pool, extractor, error_stats, start_time)
-    }));
-
-    match future.await {
-        Ok(_) => (),
-        Err(e) => error!("Error after retries: {}", e),
-    }
-}
-
-fn get_retry_strategy() -> ExponentialBackoff {
-    ExponentialBackoff::from_millis(1000)
-        .factor(2)                // Double the delay with each retry
-        .max_delay(Duration::from_secs(20)) // Maximum delay of 20 seconds
-}
-
-async fn handle_http_request(
-    client: Arc<reqwest::Client>,
-    url: String,
-    pool: Arc<SqlitePool>,
-    extractor: Arc<TldExtractor>,
-    error_stats: ErrorStats,
-    start_time: std::time::Instant,
-) -> Result<(), Error> {
-    let res = client.get(&url).send().await;
-
-    let elapsed = start_time.elapsed().as_secs_f64();
-
-    match res {
-        Ok(response) => {
-            futures::future::Either::Left(handle_response(response, &url, pool, extractor, error_stats, elapsed))
-        }
-        Err(e) => {
-            update_error_stats(&error_stats, &e);
-            futures::future::Either::Right(futures::future::ready(Err(e.into())))
-        }
-    }.await
-}
-
-async fn handle_response(
-    response: reqwest::Response,
-    url: &str,
-    pool: Arc<SqlitePool>,
-    extractor: Arc<TldExtractor>,
-    error_stats: ErrorStats,
-    elapsed: f64,
-) -> Result<(), Error> {
-    let final_url = response.url().to_string();
-    let status = response.status();
-    let status_desc = status.canonical_reason().unwrap_or_else(|| "Unknown Status Code");
-
-    let title = response.text().await.and_then(|body| Ok(extract_title(&body, &error_stats))).unwrap_or_default();
-
-    let initial_domain = extract_domain(&extractor, &url);
-    let final_domain = extract_domain(&extractor, &final_url);
-
-    let timestamp = chrono::Utc::now().timestamp_millis();
-
-    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, timestamp, &pool).await
-}
-
-async fn update_database(
-    initial_domain: &str,
-    final_domain: &str,
-    status: reqwest::StatusCode,
-    status_desc: &str,
-    elapsed: f64,
-    title: &str,
-    timestamp: i64,
-    pool: &SqlitePool,
-) -> Result<(), Error> {
-    match sqlx::query(
-        "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    )
-        .bind(&initial_domain)
-        .bind(&final_domain)
-        .bind(status.as_u16())
-        .bind(status_desc)
-        .bind(elapsed)
-        .bind(&title)
-        .bind(timestamp)
-        .execute(pool)
-        .await {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            error!("Error when accessing the database: {}", e);
-            Err(e.into())
-        }
-    }
-}
-
-fn update_error_stats(error_stats: &ErrorStats, error: &reqwest::Error) {
-    if error.is_connect() {
-        error_stats
-            .connection_refused
-            .fetch_add(1, Ordering::SeqCst);
-    } else if error.is_timeout()
-        || error
-            .to_string()
-            .contains("failed to lookup address information")
-    {
-        error_stats.dns_error.fetch_add(1, Ordering::SeqCst);
-    } else {
-        error_stats.other_errors.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-fn update_title_extract_error(error_stats: &ErrorStats) {
-    error_stats
-        .title_extract_error
-        .fetch_add(1, Ordering::SeqCst);
-}
-
-fn extract_domain(extractor: &TldExtractor, url: &str) -> String {
-    return match extractor.extract(url) {
-        Ok(extract) => {
-            if let Some(main_domain) = extract.domain {
-                format!(
-                    "{}.{}",
-                    main_domain.to_lowercase(),
-                    extract.suffix.unwrap_or_default()
-                )
-            } else {
-                // Domain not present in the URL, return an empty string
-                "".to_string()
-            }
-        }
-        Err(err) => {
-            error!("Error when extracting domain: {}", err);
-            "".to_string()
-        }
-    };
 }
 
 #[cfg(test)]
