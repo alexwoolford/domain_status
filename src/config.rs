@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
 use log::warn;
 use structopt::StructOpt;
 
@@ -9,6 +10,8 @@ use structopt::StructOpt;
 pub const SEMAPHORE_LIMIT: usize = 500;
 pub const LOGGING_INTERVAL: usize = 100;
 pub const URL_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DB_PATH: &str = "./url_checker.db";
+
 
 #[derive(Default, Debug, StructOpt)]
 #[structopt(name = "domain_status", about = "Checks a list of URLs for their status and redirection.")]
@@ -24,22 +27,23 @@ pub struct Opt {
 
 #[derive(Clone)]
 pub struct ErrorStats {
-    pub connection_refused: Arc<AtomicUsize>, // Make this field public
-    pub dns_error: Arc<AtomicUsize>,          // Make this field public
-    pub title_extract_error: Arc<AtomicUsize>,// Make this field public
-    pub other_errors: Arc<AtomicUsize>,       // Make this field public
+    pub connection_refused: Arc<AtomicUsize>,
+    pub dns_error: Arc<AtomicUsize>,
+    pub title_extract_error: Arc<AtomicUsize>,
+    pub other_errors: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
 pub struct ErrorRateLimiter {
-    pub error_stats: ErrorStats,              // Make this field public
+    pub error_stats: ErrorStats,
+    // Make this field public
     operation_count: Arc<AtomicUsize>,
     error_rate: Arc<AtomicUsize>,
     error_rate_threshold: f64,
 }
 
 impl ErrorRateLimiter {
-    pub fn new(error_stats: ErrorStats, error_rate_threshold: f64) -> Self { // Make this function public
+    pub fn new(error_stats: ErrorStats, error_rate_threshold: f64) -> Self {
         ErrorRateLimiter {
             error_stats,
             operation_count: Arc::new(AtomicUsize::new(0)),
@@ -81,5 +85,4 @@ impl ErrorRateLimiter {
 
         error_rate
     }
-
 }

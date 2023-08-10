@@ -1,13 +1,14 @@
-use super::*; // Import everything from the parent module.
-
 use std::sync::Arc;
+
 use reqwest::Client;
 use sqlx::{Pool, Sqlite};
 
 use crate::{ErrorStats, init_extractor, process_url};
 
+use super::*;
+
 async fn count_records(pool: &sqlx::Pool<Sqlite>) -> i64 {
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM url_status")
+    let row: (i64, ) = sqlx::query_as("SELECT COUNT(*) FROM url_status")
         .fetch_one(pool)
         .await
         .expect("Failed to count records");

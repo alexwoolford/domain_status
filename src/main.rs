@@ -6,8 +6,8 @@ use std::sync::atomic::Ordering;
 
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use log::warn;
 use log::info;
+use log::warn;
 use structopt::StructOpt;
 
 use config::*;

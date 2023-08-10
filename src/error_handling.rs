@@ -1,7 +1,37 @@
+use std::fmt;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
 use tokio_retry::strategy::ExponentialBackoff;
+
 use crate::config::ErrorStats;
+
+#[derive(Debug)]
+pub enum InitializationError {
+    LoggerError(log::SetLoggerError),
+}
+
+impl From<log::SetLoggerError> for InitializationError {
+    fn from(err: log::SetLoggerError) -> InitializationError {
+        InitializationError::LoggerError(err)
+    }
+}
+
+impl fmt::Display for InitializationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            InitializationError::LoggerError(e) => write!(f, "Logger initialization error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for InitializationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            InitializationError::LoggerError(e) => Some(e),
+        }
+    }
+}
 
 pub fn get_retry_strategy() -> ExponentialBackoff {
     ExponentialBackoff::from_millis(1000)

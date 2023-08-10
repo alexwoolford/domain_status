@@ -1,15 +1,19 @@
 use std::sync::Arc;
 use std::time::Duration;
+
 use reqwest::ClientBuilder;
 use simplelog::{ColorChoice, LevelFilter, TerminalMode, TermLogger};
-use tokio::sync::Semaphore;
 use tldextract::{TldExtractor, TldOption};
+use tokio::sync::Semaphore;
 
-pub fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
-    let config = simplelog::Config::default(); // <- Add this line to create the correct config
+use crate::error_handling::InitializationError;
+
+// Initializes the logger for the application with the provided configuration.
+pub fn init_logger() -> Result<(), InitializationError> {
+    let config = simplelog::Config::default();
     let term_logger = TermLogger::new(
         LevelFilter::Info,
-        config,   // <- Replace Opt::default() with the created config
+        config,
         TerminalMode::Mixed,
         ColorChoice::Auto,
     );

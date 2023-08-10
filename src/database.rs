@@ -1,27 +1,26 @@
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::sync::Arc;
+
+use anyhow::Error;
 use log::{error, info};
 use sqlx::{Pool, Sqlite, SqlitePool};
-use std::io::ErrorKind;
-use anyhow::Error;
 
-pub async fn init_db_pool() -> Result<Arc<Pool<Sqlite>>, sqlx::Error> {
-    let db_path = "./url_checker.db";
+use crate::config::DB_PATH;
 
+pub async fn init_db_pool() -> Result<Arc<Pool<Sqlite>>, Error> {
     match OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
-        .open(db_path)
+        .open(DB_PATH)
     {
         Ok(_) => info!("Database file created successfully."),
-        Err(ref e) if e.kind() == ErrorKind::AlreadyExists => {
-            info!("Database file already exists.")
-        }
-        Err(e) => panic!("Couldn't create database file: {:?}", e),
+        Err(ref e) if e.kind() == ErrorKind::AlreadyExists => info!("Database file already exists."),
+        Err(e) => return Err(Error::from(e)),
     }
 
-    let pool = SqlitePool::connect(&*format!("sqlite:{}", db_path)).await?;
+    let pool = SqlitePool::connect(&format!("sqlite:{}", DB_PATH)).await?;
 
     // Enable WAL mode
     sqlx::query("PRAGMA journal_mode=WAL")
@@ -31,8 +30,8 @@ pub async fn init_db_pool() -> Result<Arc<Pool<Sqlite>>, sqlx::Error> {
     Ok(Arc::new(pool))
 }
 
+/// Creates the 'url_status' table if it doesn't exist.
 pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
-
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS url_status (
         id INTEGER PRIMARY KEY,
@@ -51,6 +50,7 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Inserts a new URL status into the database.
 pub async fn update_database(
     initial_domain: &str,
     final_domain: &str,
