@@ -8,9 +8,8 @@ use sqlx::SqlitePool;
 use structopt::lazy_static::lazy_static;
 use tldextract::TldExtractor;
 
-use crate::config::ErrorStats;
 use crate::database::update_database;
-use crate::error_handling::{get_retry_strategy, update_error_stats, update_title_extract_error};
+use crate::error_handling::{ErrorStats, get_retry_strategy, update_error_stats};
 
 lazy_static! {
     static ref TITLE_SELECTOR: Selector = Selector::parse("title").unwrap();
@@ -80,9 +79,9 @@ fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
 
     // Use the pre-created selector.
     match parsed_html.select(&TITLE_SELECTOR).next() {
-        Some(element) => element.inner_html(),
+        Some(element) => element.inner_html().trim().to_string(),
         None => {
-            update_title_extract_error(error_stats);
+            error_stats.increment_title_extract_error();
             String::from("")
         }
     }
@@ -93,7 +92,7 @@ pub async fn process_url(
     client: Arc<reqwest::Client>,
     pool: Arc<SqlitePool>,
     extractor: Arc<TldExtractor>,
-    error_stats: ErrorStats,
+    error_stats: Arc<ErrorStats>,
 ) {
     let retry_strategy = get_retry_strategy();
     let start_time = std::time::Instant::now();
