@@ -110,11 +110,7 @@ pub async fn process_url(
     });
 
     match future.await {
-        Ok(result) => {
-            if let Err(e) = result {
-                error!("Error during processing: {}", e);
-            }
-        }
+        Ok(_) => {}
         Err(e) => error!("Error after retries: {}", e),
     }
 }

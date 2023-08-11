@@ -13,12 +13,37 @@ use crate::config::LOGGING_INTERVAL;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIterMacro)]
 pub enum ErrorType {
-    ConnectionRefused,
-    ProcessingTimeouts,
-    DNSError,
+    HttpRequestBuilderError,
+    HttpRequestRedirectError,
+    HttpRequestStatusError,
+    HttpRequestTimeoutError,
+    HttpRequestRequestError,
+    HttpRequestConnectError,
+    HttpRequestBodyError,
+    HttpRequestDecodeError,
+    HttpRequestOtherError,
+    HttpRequestTooManyRedirects,
     TitleExtractError,
-    TooManyRedirects,
-    OtherErrors,
+    ProcessUrlTimeout,
+}
+
+impl ErrorType {
+    pub fn to_string(&self) -> &'static str {
+        match self {
+            ErrorType::HttpRequestBuilderError => "HTTP request builder error",
+            ErrorType::HttpRequestRedirectError => "HTTP request redirect error",
+            ErrorType::HttpRequestStatusError => "HTTP request status error",
+            ErrorType::HttpRequestTimeoutError => "HTTP request timeout error",
+            ErrorType::HttpRequestRequestError => "HTTP request error",
+            ErrorType::HttpRequestConnectError => "HTTP request connect error",
+            ErrorType::HttpRequestBodyError => "HTTP request body error",
+            ErrorType::HttpRequestDecodeError => "HTTP request decode error",
+            ErrorType::HttpRequestOtherError => "HTTP request other error",
+            ErrorType::HttpRequestTooManyRedirects => "Too many redirects",
+            ErrorType::TitleExtractError => "Title extract error",
+            ErrorType::ProcessUrlTimeout => "Process URL timeout",
+        }
+    }
 }
 
 pub struct ErrorStats {
@@ -47,6 +72,11 @@ impl ErrorStats {
             0
         }
     }
+
+    pub fn total_error_count(&self) -> usize {
+        self.errors.values().map(|counter| counter.load(Ordering::SeqCst)).sum()
+    }
+
 }
 
 #[derive(Clone)]
@@ -75,10 +105,7 @@ impl ErrorRateLimiter {
 
             self.error_rate.store(error_rate as usize, Ordering::SeqCst);
 
-            let total_errors = self.error_stats.get_count(ErrorType::ConnectionRefused)
-                + self.error_stats.get_count(ErrorType::DNSError)
-                + self.error_stats.get_count(ErrorType::OtherErrors)
-                + self.error_stats.get_count(ErrorType::TitleExtractError);
+            let total_errors = self.error_stats.total_error_count();
 
             if error_rate > self.error_rate_threshold {
                 // increase backoff time
@@ -91,10 +118,7 @@ impl ErrorRateLimiter {
     }
 
     fn calculate_error_rate(&self) -> f64 {
-        let total_errors = self.error_stats.get_count(ErrorType::ConnectionRefused)
-            + self.error_stats.get_count(ErrorType::DNSError)
-            + self.error_stats.get_count(ErrorType::OtherErrors)
-            + self.error_stats.get_count(ErrorType::TitleExtractError);
+        let total_errors = self.error_stats.total_error_count();
 
         let error_rate = (total_errors as f64 / f64::max(total_errors as f64, self.operation_count.load(Ordering::SeqCst) as f64)) * 100.0;
 
@@ -136,14 +160,41 @@ pub fn get_retry_strategy() -> ExponentialBackoff {
 }
 
 pub fn update_error_stats(error_stats: &ErrorStats, error: &reqwest::Error) {
-    let error_type = if error.is_connect() {
-        ErrorType::ConnectionRefused
-    } else if error.is_timeout() || error.to_string().contains("failed to lookup address information") {
-        ErrorType::DNSError
-    } else if error.is_redirect() || error.to_string().contains("too many redirects") {
-        ErrorType::TooManyRedirects
-    } else {
-        ErrorType::OtherErrors
+
+    let error_type = match error.status() {
+
+        // When the error contains a status code, match on it
+        Some(status) if status.is_client_error() => {
+            match status.as_u16() {
+                429 => ErrorType::HttpRequestTooManyRedirects,
+                _ => ErrorType::HttpRequestOtherError
+            }
+        },
+        Some(status) if status.is_server_error() => ErrorType::HttpRequestOtherError,
+        _ => {
+            // For non-status errors, check the error type
+            if error.is_builder() {
+                ErrorType::HttpRequestBuilderError
+            } else if error.is_redirect() {
+                ErrorType::HttpRequestRedirectError
+            } else if error.is_status() {
+                ErrorType::HttpRequestStatusError
+            } else if error.is_timeout() {
+                ErrorType::HttpRequestTimeoutError
+            } else if error.is_request() {
+                ErrorType::HttpRequestRequestError
+            } else if error.is_connect() {
+                ErrorType::HttpRequestConnectError
+            } else if error.is_body() {
+                ErrorType::HttpRequestBodyError
+            } else if error.is_decode() {
+                ErrorType::HttpRequestDecodeError
+            } else {
+                ErrorType::HttpRequestOtherError
+            }
+        }
     };
+
     error_stats.increment(error_type);
+
 }

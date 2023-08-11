@@ -15,9 +15,9 @@ pub const DB_PATH: &str = "./url_checker.db";
 pub struct Opt {
     /// File to read
     #[structopt(parse(from_os_str))]
-    pub file: PathBuf, // Make this field public
+    pub file: PathBuf,
 
     /// Error rate threshold
     #[structopt(long, default_value = "60.0")]
-    pub error_rate: f64, // Make this field public
+    pub error_rate: f64,
 }

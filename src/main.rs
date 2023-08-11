@@ -14,6 +14,7 @@ use validators::regex::Regex;
 use config::*;
 use database::*;
 use initialization::*;
+use strum::IntoEnumIterator;
 use utils::*;
 
 use crate::error_handling::{ErrorRateLimiter, ErrorStats, ErrorType};
@@ -106,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     completed_urls_clone.fetch_add(1, Ordering::SeqCst);
                 }
                 Err(_) => {
-                    error_stats_clone.increment(ErrorType::ProcessingTimeouts);
+                    error_stats_clone.increment(ErrorType::ProcessUrlTimeout);
                 }
             }
         }));
@@ -131,31 +132,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Log one final time before printing the error summary
     log_progress(start_time, &completed_urls);
 
-    info!("Error Summary:");
-    info!(
-        "   Connection Refused: {}",
-        error_stats.get_count(ErrorType::ConnectionRefused)
-    );
-    info!(
-        "   Processing Timeouts: {}",
-        error_stats.get_count(ErrorType::ProcessingTimeouts)
-    );
-    info!(
-        "   DNS Errors: {}",
-        error_stats.get_count(ErrorType::DNSError)
-    );
-    info!(
-        "   Title extract error: {}",
-        error_stats.get_count(ErrorType::TitleExtractError)
-    );
-    info!(
-        "   Too many redirects: {}",
-        error_stats.get_count(ErrorType::TooManyRedirects)
-    );
-    info!(
-        "   Other Errors: {}",
-        error_stats.get_count(ErrorType::OtherErrors)
-    );
+    // Print the error counts
+    info!("Error Counts:");
+    for error_type in ErrorType::iter() {
+        if error_stats.get_count(error_type) > 0 {
+            info!(
+                "   {}: {}",
+                error_type.to_string(),
+                error_stats.get_count(error_type)
+            );
+        }
+    }
 
     Ok(())
 }
