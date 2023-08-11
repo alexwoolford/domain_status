@@ -9,7 +9,7 @@ use structopt::lazy_static::lazy_static;
 use tldextract::TldExtractor;
 
 use crate::database::update_database;
-use crate::error_handling::{ErrorStats, get_retry_strategy, update_error_stats};
+use crate::error_handling::{ErrorStats, ErrorType, get_retry_strategy, update_error_stats};
 
 lazy_static! {
     static ref TITLE_SELECTOR: Selector = Selector::parse("title").unwrap();
@@ -81,7 +81,7 @@ fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
     match parsed_html.select(&TITLE_SELECTOR).next() {
         Some(element) => element.inner_html().trim().to_string(),
         None => {
-            error_stats.increment_title_extract_error();
+            error_stats.increment(ErrorType::TitleExtractError);
             String::from("")
         }
     }

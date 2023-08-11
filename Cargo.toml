@@ -36,3 +36,5 @@ simplelog = "0.12"
 # Other
 chrono = "0.4"
 rand = "0.8"
+strum = "0.25"
+strum_macros = "0.25"

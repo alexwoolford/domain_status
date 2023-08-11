@@ -16,7 +16,7 @@ use database::*;
 use initialization::*;
 use utils::*;
 
-use crate::error_handling::{ErrorRateLimiter, ErrorStats};
+use crate::error_handling::{ErrorRateLimiter, ErrorStats, ErrorType};
 
 mod config;
 mod initialization;
@@ -55,14 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_time = std::time::Instant::now();
 
-    let error_stats = Arc::new(ErrorStats {
-        connection_refused: Arc::new(AtomicUsize::new(0)),
-        processing_timeouts: Arc::new(AtomicUsize::new(0)),
-        dns_error: Arc::new(AtomicUsize::new(0)),
-        title_extract_error: Arc::new(AtomicUsize::new(0)),
-        too_many_redirects: Arc::new(AtomicUsize::new(0)),
-        other_errors: Arc::new(AtomicUsize::new(0)),
-    });
+    let error_stats = Arc::new(ErrorStats::new());
 
     let rate_limiter = ErrorRateLimiter::new(error_stats.clone(), opt.error_rate);
 
@@ -92,12 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let client_clone = Arc::clone(&client);
         let pool_clone = Arc::clone(&pool);
         let extractor_clone = Arc::clone(&extractor);
-        // Clone for use inside the async block
-        let error_stats_inside = error_stats.clone();
 
         let completed_urls_clone = Arc::clone(&completed_urls);
 
-        let error_stats_for_timeout = error_stats_inside.clone();
+        let error_stats_clone = error_stats.clone();
 
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
@@ -107,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client_clone,
                 pool_clone,
                 extractor_clone,
-                error_stats_for_timeout,
+                error_stats_clone.clone(),
             )).await;
 
             match result {
@@ -115,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     completed_urls_clone.fetch_add(1, Ordering::SeqCst);
                 }
                 Err(_) => {
-                    error_stats_inside.increment_processing_timeouts();
+                    error_stats_clone.increment(ErrorType::ProcessingTimeouts);
                 }
             }
         }));
@@ -143,27 +134,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Error Summary:");
     info!(
         "   Connection Refused: {}",
-        error_stats.connection_refused.load(Ordering::SeqCst)
+        error_stats.get_count(ErrorType::ConnectionRefused)
     );
     info!(
         "   Processing Timeouts: {}",
-        error_stats.processing_timeouts.load(Ordering::SeqCst)
+        error_stats.get_count(ErrorType::ProcessingTimeouts)
     );
     info!(
         "   DNS Errors: {}",
-        error_stats.dns_error.load(Ordering::SeqCst)
+        error_stats.get_count(ErrorType::DNSError)
     );
     info!(
         "   Title extract error: {}",
-        error_stats.title_extract_error.load(Ordering::SeqCst)
+        error_stats.get_count(ErrorType::TitleExtractError)
     );
     info!(
         "   Too many redirects: {}",
-        error_stats.too_many_redirects.load(Ordering::SeqCst)
+        error_stats.get_count(ErrorType::TooManyRedirects)
     );
     info!(
         "   Other Errors: {}",
-        error_stats.other_errors.load(Ordering::SeqCst)
+        error_stats.get_count(ErrorType::OtherErrors)
     );
 
     Ok(())
