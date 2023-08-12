@@ -3,7 +3,7 @@ name = "domain_status"
 version = "0.1.0"
 edition = "2021"
 authors = ["Alex Woolford <alex@woolford.io>"]
-description = "A Rust project that scrapes domains and captures information in a SQLite database."
+description = "A Rust project that scrapes urls and captures status information in a SQLite database."
 
 [dependencies]
 # HTTP requests and async
@@ -27,11 +27,8 @@ anyhow = "1.0"
 
 # Logging
 log = "0.4"
-slog = "2.7"
-slog-async = "2.7"
-slog-term = "2.9"
-slog-stdlog = "4.1"
-simplelog = "0.12"
+env_logger = "0.10"
+colored = "2.0"
 
 # Other
 chrono = "0.4"

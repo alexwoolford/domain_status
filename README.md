@@ -1,95 +1,57 @@
 # domain_status
-This is a multithreaded tool implemented in Rust for checking the status and redirection of a list of URLs. It provides performance monitoring, error handling, and stores the result in a SQLite database.
+**domain_status** is a Rust-based tool designed for multithreaded checking of URL statuses and redirections. It captures errors, tracks progress, and records results in a SQLite database.
 
-## Features
-Multithreading using tokio and futures for high-performance processing.
-Comprehensive error handling for various types of connection and DNS issues.
-Extraction of the domain from URLs using the tldextract library.
-Extraction and storage of critical data such as the status, final domain after redirection, and the title of the webpage.
-Regular status updates for every 100 URLs processed.
-Comprehensive error summary at the end of the execution for debugging and auditing purposes.
+## 🌟 Features
 
-## Dependencies
-This program depends on several Rust crates, including but not limited to futures for asynchronous programming, reqwest for making HTTP requests, rusqlite for interacting with SQLite databases, scraper for web scraping, log for logging, structopt for command-line option parsing, tldextract for domain extraction, tokio for asynchronous I/O, and simplelog for simple and efficient logging.
+* **Speedy Execution**: Utilizes multithreading to process URLs rapidly.
+* **Accurate Monitoring**: Keeps track of various connection and DNS issues.
+* **Comprehensive Reports**: Provides regular status updates and a detailed error summary after execution.
+* **Data Storage**: Saves results to a SQLite database for easy access and further analysis.
+* **Domain Insights**: Extracts domains from URLs and captures critical data like final domain after redirection.
 
-## Building
-This project uses Cargo, the Rust package manager, for building and dependency management.
+## 🔧 Getting Started
 
-To build the project, navigate to the project's root directory and use the following command:
+### Building
+To get started, first build the project:
 
     cargo build --release
 
-This will create an executable in the `./target/release/` directory.
+This creates an executable in the ./target/release/ directory.
 
-## Usage
-To use the tool, provide the file containing the list of URLs to be checked as a command-line argument when running the program. For instance:
+### Usage
+Run the tool with a list of URLs:
 
     domain_status urls.txt
 
-Where `urls.txt` is a plain text file containing one URL per line, like so:
+## Database Details
+The results are stored in the domain_results.db SQLite database, inside a table named `url_status`. Each entry in this table consists of:
 
-    https://example1.com
-    https://example2.com
+| Field                  | Type      | Description                                            |
+|------------------------|-----------|--------------------------------------------------------|
+| **id**                 | `integer` | A unique identifier.                                   |
+| **domain**             | `text`    | The initial domain checked.                            |
+| **final_domain**       | `text`    | The domain after potential redirections.               |
+| **status**             | `integer` | The HTTP status code.                                  |
+| **status_description** | `text`    | A brief description of the status code.                |
+| **response_time**      | `numeric` | How long the request took (seconds).                   |
+| **title**              | `text`    | The webpage's title, when applicable.                  |
+| **timestamp**          | `integer` | When the URL check happened, recorded in epoch millis. |
 
-The program will process each URL asynchronously and store the results in the database.
+## 📊 Output
+Stay informed with detailed logging:
 
-You can also set an optional error-rate threshold using the `--error-rate` flag, like so:
+```plaintext
+✔️ domain_status::database [INFO] Database file created successfully.
+✔️ domain_status [INFO] Processed 1506 lines in 5.33 seconds (~282.29 lines/sec)
+✔️ domain_status [INFO] Processed 1851 lines in 10.32 seconds (~179.39 lines/sec)
+✔️ domain_status [INFO] Processed 1856 lines in 15.23 seconds (~121.87 lines/sec)
+✔️ domain_status [INFO] Error Counts:
+✔️ domain_status [INFO]    HTTP request redirect error: 2
+✔️ domain_status [INFO]    HTTP request timeout error: 154
+✔️ domain_status [INFO]    HTTP request error: 544
+✔️ domain_status [INFO]    Title extract error: 49
+✔️ domain_status [INFO]    Process URL timeout: 144
+```
 
-    domain_status urls.txt --error-rate 60 
-
-This sets an error-rate threshold of 60%. If the error-rate exceeds this threshold, the program will start to throttle the processing, slowing down the rate at which URLs are checked.
-
-## Output
-The output of the program includes:
-
-* Regular logs for every 100 URLs processed. These logs contain the total elapsed time and the average processing speed.
-* A comprehensive summary of the errors encountered during the execution.
-
-The results of the check are stored in a SQLite database in a table named url_status. Each entry in the table includes the following fields:
-
-* id (integer): A unique identifier for each entry.
-* domain (text): The original domain checked.
-* final_domain (text): The final domain after any redirections.
-* status (integer): The HTTP status code received.
-* status_description (text): The description of the HTTP status code.
-* response_time (numeric): The response time of the request.
-* title (text): The title of the webpage, if available.
-* timestamp (integer): The timestamp, in epoch millis, when the URL was processed.
-
-## Errors
-The program keeps track of four types of errors during execution:
-
-* connection_refused: The connection was refused by the server.
-* dns_error: There was a DNS resolution issue.
-* title_extract_error: The title could not be extracted from the webpage.
-* other_errors: Any other errors encountered during execution.
-
-The error counts are output at the end of the program execution.
-
-## Initialization
-At the start of the program, several key components are initialized, such as a logger for logging, a semaphore for controlling concurrent tasks, an HTTP client for making requests, a database connection pool for managing SQLite database connections, and a domain extractor for extracting domains from URLs.
-
-## Processing
-The processing of each URL is done in the process_url function. This function:
-
-* Sends a GET request to the URL.
-* Extracts important data such as the status, final URL after redirection, and the page title.
-* Stores these details in the database.
-
-## System Configuration Considerations
-
-When processing a large file, you might encounter the following error:
-
-    Error when accessing the database: error returned from database: (code: 14) unable to open database file
-
-This error can occur when the system's limit on the maximum number of open file descriptors (ulimit) is too low for the number of concurrent tasks the program is attempting to perform.
-
-The workaround for this issue is to increase the ulimit on your Linux host. You can use the following command to check the current ulimit:
-
-    ulimit -n
-
-If the value is a small number, like the default value of 1024, you might need to increase it. As an example, you can set it to 32768 like so:
-
-    ulimit -n 32768
-
-Please note that this command only increases the ulimit for the current session. If you want to increase the ulimit system-wide and permanently, you would need to modify some system files.
+## 🚀 Performance & Scalability
+Designed with scalability in mind, domain_status ensures smooth operation even with large files. If you encounter system-specific errors related to file limits, check and adjust your system's ulimit settings.
