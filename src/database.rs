@@ -80,9 +80,6 @@ pub async fn update_database(
     let valid_from_millis = naive_datetime_to_millis(ssl_cert_valid_from.as_ref());
     let valid_to_millis = naive_datetime_to_millis(ssl_cert_valid_to.as_ref());
 
-    let valid_from_epoch_seconds = naive_datetime_to_epoch_seconds(ssl_cert_valid_from.as_ref());
-    let valid_to_epoch_seconds = naive_datetime_to_epoch_seconds(ssl_cert_valid_to.as_ref());
-
     match sqlx::query(
         "INSERT INTO url_status (\
                 domain, \
@@ -104,8 +101,8 @@ pub async fn update_database(
         .bind(elapsed)
         .bind(&title)
         .bind(&ssl_cert_issuer)
-        .bind(valid_from_epoch_seconds)
-        .bind(valid_to_epoch_seconds)
+        .bind(valid_from_millis)
+        .bind(valid_to_millis)
         .bind(timestamp)
         .execute(pool)
         .await {
