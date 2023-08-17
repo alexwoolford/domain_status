@@ -3,6 +3,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use anyhow::Error;
+use chrono::NaiveDateTime;
 use log::{error, info};
 use sqlx::{Pool, Sqlite, SqlitePool};
 
@@ -41,6 +42,9 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
         status_description TEXT NOT NULL,
         response_time NUMERIC(10, 2),
         title TEXT NOT NULL,
+        ssl_cert_issuer TEXT,
+        ssl_cert_valid_from INTEGER,
+        ssl_cert_valid_to INTEGER,
         timestamp INTEGER NOT NULL
     )",
     )
@@ -48,6 +52,14 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
         .await?;
 
     Ok(())
+}
+
+fn naive_datetime_to_millis(datetime: Option<&NaiveDateTime>) -> Option<i64> {
+    datetime.map(|dt| dt.timestamp_millis())
+}
+
+fn naive_datetime_to_epoch_seconds(datetime: Option<&NaiveDateTime>) -> Option<i64> {
+    datetime.map(|dt| dt.timestamp())
 }
 
 /// Inserts a new URL status into the database.
@@ -59,10 +71,31 @@ pub async fn update_database(
     elapsed: f64,
     title: &str,
     timestamp: i64,
+    ssl_cert_issuer: &Option<String>,
+    ssl_cert_valid_from: Option<NaiveDateTime>,
+    ssl_cert_valid_to: Option<NaiveDateTime>,
     pool: &SqlitePool,
 ) -> Result<(), Error> {
+
+    let valid_from_millis = naive_datetime_to_millis(ssl_cert_valid_from.as_ref());
+    let valid_to_millis = naive_datetime_to_millis(ssl_cert_valid_to.as_ref());
+
+    let valid_from_epoch_seconds = naive_datetime_to_epoch_seconds(ssl_cert_valid_from.as_ref());
+    let valid_to_epoch_seconds = naive_datetime_to_epoch_seconds(ssl_cert_valid_to.as_ref());
+
     match sqlx::query(
-        "INSERT INTO url_status (domain, final_domain, status, status_description, response_time, title, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO url_status (\
+                domain, \
+                final_domain, \
+                status, \
+                status_description, \
+                response_time, \
+                title, \
+                ssl_cert_issuer, \
+                ssl_cert_valid_from, \
+                ssl_cert_valid_to, \
+                timestamp\
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&initial_domain)
         .bind(&final_domain)
@@ -70,6 +103,9 @@ pub async fn update_database(
         .bind(status_desc)
         .bind(elapsed)
         .bind(&title)
+        .bind(&ssl_cert_issuer)
+        .bind(valid_from_epoch_seconds)
+        .bind(valid_to_epoch_seconds)
         .bind(timestamp)
         .execute(pool)
         .await {
