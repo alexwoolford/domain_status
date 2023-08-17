@@ -42,9 +42,12 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
         status_description TEXT NOT NULL,
         response_time NUMERIC(10, 2),
         title TEXT NOT NULL,
+        ssl_cert_subject TEXT,
         ssl_cert_issuer TEXT,
+        ssl_cert_version INTEGER,
         ssl_cert_valid_from INTEGER,
         ssl_cert_valid_to INTEGER,
+        ssl_cert_is_ev INTEGER,
         timestamp INTEGER NOT NULL
     )",
     )
@@ -58,10 +61,6 @@ fn naive_datetime_to_millis(datetime: Option<&NaiveDateTime>) -> Option<i64> {
     datetime.map(|dt| dt.timestamp_millis())
 }
 
-fn naive_datetime_to_epoch_seconds(datetime: Option<&NaiveDateTime>) -> Option<i64> {
-    datetime.map(|dt| dt.timestamp())
-}
-
 /// Inserts a new URL status into the database.
 pub async fn update_database(
     initial_domain: &str,
@@ -71,9 +70,11 @@ pub async fn update_database(
     elapsed: f64,
     title: &str,
     timestamp: i64,
+    ssl_cert_subject: &Option<String>,
     ssl_cert_issuer: &Option<String>,
     ssl_cert_valid_from: Option<NaiveDateTime>,
     ssl_cert_valid_to: Option<NaiveDateTime>,
+    ssl_cert_is_ev: Option<bool>,
     pool: &SqlitePool,
 ) -> Result<(), Error> {
 
@@ -88,11 +89,13 @@ pub async fn update_database(
                 status_description, \
                 response_time, \
                 title, \
+                ssl_cert_subject, \
                 ssl_cert_issuer, \
                 ssl_cert_valid_from, \
                 ssl_cert_valid_to, \
+                ssl_cert_is_ev, \
                 timestamp\
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&initial_domain)
         .bind(&final_domain)
@@ -100,9 +103,11 @@ pub async fn update_database(
         .bind(status_desc)
         .bind(elapsed)
         .bind(&title)
+        .bind(&ssl_cert_subject)
         .bind(&ssl_cert_issuer)
         .bind(valid_from_millis)
         .bind(valid_to_millis)
+        .bind(&ssl_cert_is_ev)
         .bind(timestamp)
         .execute(pool)
         .await {

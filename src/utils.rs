@@ -12,6 +12,7 @@ use std::convert::TryInto;
 
 use crate::database::update_database;
 use crate::error_handling::{ErrorStats, ErrorType, get_retry_strategy, update_error_stats};
+use crate::item_counting::{OidCounts};
 
 lazy_static! {
     static ref TITLE_SELECTOR: Selector = Selector::parse("title").unwrap();
@@ -34,27 +35,61 @@ fn extract_domain(extractor: &TldExtractor, url: &str) -> Result<String, anyhow:
         })
 }
 
+fn is_ev_certificate(cert: &x509_parser::certificate::X509Certificate, oid_counts: &mut &OidCounts) -> bool {
+    // List of some known EV OIDs. You would need to maintain and update this list.
+    let known_ev_oids = vec![
+        "2.16.840.1.114412.2.1",
+        "2.23.140.1.1",
+        "1.3.6.1.4.1.6334.1.100.1",
+        "2.16.840.1.113733.1.7.23.6",
+        "2.16.840.1.114412.3.2",
+        "2.23.140.1.3",
+        // ... add other known EV OIDs here ...
+        // ref: https://github.com/digicert/digicert_official_oids
+    ];
+
+    for ext in cert.extensions() {
+
+        oid_counts.increment(&ext.oid.to_string());
+        // oid_counts.increment(ext.oid.to_id_string());
+
+        if ext.oid == x509_parser::oid_registry::OID_X509_EXT_CERTIFICATE_POLICIES {
+            // Here, we identified the CertificatePolicies extension by OID.
+            // If x509_parser does not provide parsing, you might not get the parsed_content.
+            // Instead, we'll just look at the raw value (which is a byte slice) and check if any known EV OIDs appear.
+            // This is a naive check and assumes no other data would collide with the OID strings.
+            for oid in &known_ev_oids {
+                if ext.value.windows(oid.as_bytes().len()).any(|window| window == oid.as_bytes()) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 async fn handle_response(
     response: reqwest::Response,
     url: &str,
     pool: &SqlitePool,
     extractor: &TldExtractor,
     error_stats: &ErrorStats,
+    oid_counts: &OidCounts,
     elapsed: f64,
 ) -> Result<(), Error> {
-    let (issuer, valid_from, valid_to) = if url.starts_with("https://") {
+    let (subject, issuer, valid_from, valid_to, is_ev) = if url.starts_with("https://") {
         match extract_domain(&extractor, url) {
-            Ok(domain) => match get_ssl_certificate_info(&domain).await {
-                Ok(cert_info) => (cert_info.issuer, cert_info.valid_from, cert_info.valid_to),
+            Ok(domain) => match get_ssl_certificate_info(&domain, oid_counts).await {
+                Ok(cert_info) => (cert_info.subject, cert_info.issuer, cert_info.valid_from, cert_info.valid_to, cert_info.is_ev),
                 Err(e) => {
                     error!("Failed to get SSL certificate info for {}: {}", domain, e);
-                    (None, None, None)
+                    (None, None, None, None, None)
                 }
             },
-            Err(_) => (None, None, None),
+            Err(_) => (None, None, None, None, None),
         }
     } else {
-        (None, None, None)
+        (None, None, None, None, None)
     };
 
     let final_url = response.url().to_string();
@@ -68,7 +103,7 @@ async fn handle_response(
 
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, timestamp, &issuer, valid_from, valid_to, pool).await
+    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, timestamp, &subject, &issuer, valid_from, valid_to, is_ev, pool).await
 }
 
 
@@ -78,13 +113,14 @@ async fn handle_http_request(
     pool: &SqlitePool,
     extractor: &TldExtractor,
     error_stats: &ErrorStats,
+    oid_counts: &OidCounts,
     start_time: std::time::Instant,
 ) -> Result<(), Error> {
     let res = client.get(url).send().await;
     let elapsed = start_time.elapsed().as_secs_f64();
 
     match res {
-        Ok(response) => handle_response(response, url, pool, extractor, error_stats, elapsed).await,
+        Ok(response) => handle_response(response, url, pool, extractor, error_stats, oid_counts, elapsed).await,
         Err(e) => {
             update_error_stats(error_stats, &e);
             Err(e.into())
@@ -106,12 +142,14 @@ fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
 }
 
 struct CertificateInfo {
+    subject: Option<String>,
     issuer: Option<String>,
     valid_from: Option<chrono::NaiveDateTime>,
     valid_to: Option<chrono::NaiveDateTime>,
+    is_ev: Option<bool>
 }
 
-async fn get_ssl_certificate_info(domain: &str) -> Result<CertificateInfo, anyhow::Error> {
+async fn get_ssl_certificate_info(domain: &str, mut oid_counts: &OidCounts) -> Result<CertificateInfo, anyhow::Error> {
 
     info!("{}", domain);
 
@@ -136,8 +174,6 @@ async fn get_ssl_certificate_info(domain: &str) -> Result<CertificateInfo, anyho
     let server_name: ServerName = domain.try_into().unwrap();
     let server_name_clone = server_name.clone();
 
-    let conn = rustls::ClientConnection::new(config_arc.clone(), server_name).unwrap();
-
     let sock = tokio::net::TcpStream::connect(format!("{}:443", domain)).await?;
 
     let mut tls_stream = TlsConnector::from(config_arc.clone()).connect(server_name_clone, sock).await?;
@@ -153,16 +189,15 @@ async fn get_ssl_certificate_info(domain: &str) -> Result<CertificateInfo, anyho
 
     tls_stream.write_all(request.as_bytes()).await?;
 
-    // Destructure the result of get_ref() to clearly name the parts
-    let (tcp_stream, client_session) = tls_stream.get_ref();
-
     if let Some(certs) = tls_stream.get_ref().1.peer_certificates() {
         if let Some(cert) = certs.last() {
             let (_, cert) = x509_parser::parse_x509_certificate(cert.as_ref())?;
-            let tbs_cert = cert.tbs_certificate;
+            let tbs_cert = &cert.tbs_certificate;
 
-            let subject = tbs_cert.subject.to_string();
-            let issuer = tbs_cert.issuer.to_string();
+            let subject = cert.tbs_certificate.subject.to_string();
+            let issuer = cert.tbs_certificate.issuer.to_string();
+
+            let is_ev = is_ev_certificate(&cert, &mut oid_counts);
 
             let valid_from_str = tbs_cert.validity.not_before.to_rfc2822()
                 .map_err(|e| anyhow::anyhow!("RFC2822 conversion error for not_before: {}", e))?;
@@ -175,9 +210,11 @@ async fn get_ssl_certificate_info(domain: &str) -> Result<CertificateInfo, anyho
                 .map_err(|_| anyhow::anyhow!("Failed to parse not_after"))?;
 
             return Ok(CertificateInfo {
+                subject:Some(subject),
                 issuer: Some(issuer),
                 valid_from: Some(valid_from),
                 valid_to: Some(valid_to),
+                is_ev: Some(is_ev),
             });
         }
     }
@@ -192,6 +229,7 @@ pub async fn process_url(
     pool: Arc<SqlitePool>,
     extractor: Arc<TldExtractor>,
     error_stats: Arc<ErrorStats>,
+    oid_counts: Arc<OidCounts>,
 ) {
     let retry_strategy = get_retry_strategy();
     let start_time = std::time::Instant::now();
@@ -202,9 +240,10 @@ pub async fn process_url(
         let pool = pool.clone();
         let extractor = extractor.clone();
         let error_stats = error_stats.clone();
+        let oid_counts = oid_counts.clone();
 
         tokio::task::spawn(async move {
-            handle_http_request(&*client, &url, &*pool, &*extractor, &error_stats, start_time).await
+            handle_http_request(&*client, &url, &*pool, &*extractor, &error_stats, &oid_counts, start_time).await
         })
     });
 
