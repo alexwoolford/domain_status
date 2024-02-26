@@ -24,18 +24,13 @@ async fn test_process_url() -> Result<(), Box<dyn std::error::Error>> {
     create_table(&pool).await?;
 
     let extractor = init_extractor();
-    let error_stats = ErrorStats {
-        connection_refused: Arc::new(AtomicUsize::new(0)),
-        dns_error: Arc::new(AtomicUsize::new(0)),
-        title_extract_error: Arc::new(AtomicUsize::new(0)),
-        other_errors: Arc::new(AtomicUsize::new(0)),
-    };
-
+    let error_stats = Arc::new(ErrorStats::new());
+    let oid_counts = Arc::new(OidCounts::new());
     // Url for testing
     let url = "https://example.com".to_string();
 
     let count_before = count_records(&pool).await;
-    process_url(url, client.clone(), Arc::new(pool.clone()), extractor.clone(), error_stats.clone()).await;
+    process_url(url, client.clone(), Arc::new(pool.clone()), extractor.clone(), error_stats.clone(), oid_counts.clone()).await;
     let count_after = count_records(&pool).await;
 
     let expected_increase = 1;

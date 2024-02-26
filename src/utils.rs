@@ -6,9 +6,12 @@ use sqlx::SqlitePool;
 use structopt::lazy_static::lazy_static;
 use tldextract::TldExtractor;
 use tokio::io::AsyncWriteExt;
-use rustls::{OwnedTrustAnchor, RootCertStore, ServerName};
+use rustls::{RootCertStore};
 use tokio_rustls::TlsConnector;
 use std::convert::TryInto;
+use rustls::pki_types::ServerName;
+use validators::serde_json::json;
+use x509_parser::extensions::ParsedExtension;
 
 use crate::database::update_database;
 use crate::error_handling::{ErrorStats, ErrorType, get_retry_strategy, update_error_stats};
@@ -149,29 +152,45 @@ struct CertificateInfo {
     is_ev: Option<bool>
 }
 
+fn extract_certificate_policies(cert: &x509_parser::certificate::X509Certificate<'_>) -> Result<Vec<String>, anyhow::Error> {
+    let mut oids: Vec<String> = Vec::new();
+
+    for ext in cert.extensions() {
+        // Dereference the result from parsed_extension()
+        match *ext.parsed_extension() {
+            // Now match against the ParsedExtension variants directly
+            ParsedExtension::CertificatePolicies(ref policies) => {
+                // Now we can iterate over the policies
+                oids.extend(policies.iter().map(|policy| policy.policy_id.to_string()));
+            },
+            // Ignore other cases; we only care about CertificatePolicies
+            _ => {}
+        }
+    }
+
+    Ok(oids)
+}
+
+
+
 async fn get_ssl_certificate_info(domain: &str, mut oid_counts: &OidCounts) -> Result<CertificateInfo, anyhow::Error> {
 
     info!("{}", domain);
 
     let mut root_store = RootCertStore::empty();
-    root_store.add_trust_anchors(
+    root_store.extend(
         webpki_roots::TLS_SERVER_ROOTS
             .iter()
-            .map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }),
+            .cloned()
     );
+
     let config = rustls::ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
     let config_arc = Arc::new(config);
-    let server_name: ServerName = domain.try_into().unwrap();
+    let domain_owned = domain.to_string(); // Convert &str to String
+    let server_name: ServerName = domain_owned.try_into().unwrap();
     let server_name_clone = server_name.clone();
 
     let sock = tokio::net::TcpStream::connect(format!("{}:443", domain)).await?;
@@ -196,6 +215,33 @@ async fn get_ssl_certificate_info(domain: &str, mut oid_counts: &OidCounts) -> R
 
             let subject = cert.tbs_certificate.subject.to_string();
             let issuer = cert.tbs_certificate.issuer.to_string();
+
+            let sig_algorithm_oid = cert.signature_algorithm.algorithm.clone();
+            let sig_algorithm_string = format!("{}", sig_algorithm_oid);
+
+            let oids = extract_certificate_policies(&cert);
+
+            // TODO: sometimes there are multiple OIDs, and even multiple records for a single domain. These need to be collapsed into a single list.
+            match oids {
+                Ok(oids) => {
+                    // Now we have a `Vec<String>` that we can serialize
+                    match serde_json::to_string(&oids) {
+                        Ok(json_string) => {
+                            println!("Serialized JSON string: {}", json_string);
+                            // You can now store `json_string` in your database or use it as needed
+                        },
+                        Err(e) => {
+                            println!("Serialization error: {}", e);
+                            // Handle serialization error, such as logging or returning the error
+                        },
+                    }
+                },
+                Err(e) => {
+                    // Handle the error that occurred during OID extraction
+                    println!("Error extracting OIDs: {}", e);
+                    // Depending on your error handling, you may log the error, return it, etc.
+                },
+            }
 
             let is_ev = is_ev_certificate(&cert, &mut oid_counts);
 
