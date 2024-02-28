@@ -44,7 +44,6 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
         title TEXT NOT NULL,
         ssl_cert_subject TEXT,
         ssl_cert_issuer TEXT,
-        ssl_cert_version INTEGER,
         ssl_cert_valid_from INTEGER,
         ssl_cert_valid_to INTEGER,
         oids STRING,
