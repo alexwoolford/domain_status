@@ -18,14 +18,12 @@ use strum::IntoEnumIterator;
 use utils::*;
 
 use crate::error_handling::{ErrorRateLimiter, ErrorStats, ErrorType};
-use crate::item_counting::OidCounts;
 
 mod config;
 mod initialization;
 mod database;
 mod utils;
 mod error_handling;
-mod item_counting;
 
 fn log_progress(start_time: std::time::Instant, completed_urls: &Arc<AtomicUsize>) {
     let elapsed = start_time.elapsed();
@@ -59,7 +57,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = std::time::Instant::now();
 
     let error_stats = Arc::new(ErrorStats::new());
-    let oid_counts = Arc::new(OidCounts::new());
 
     let rate_limiter = ErrorRateLimiter::new(error_stats.clone(), opt.error_rate);
 
@@ -93,7 +90,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let completed_urls_clone = Arc::clone(&completed_urls);
 
         let error_stats_clone = error_stats.clone();
-        let oid_counts_clone = oid_counts.clone();
 
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
@@ -104,7 +100,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pool_clone,
                 extractor_clone,
                 error_stats_clone.clone(),
-                oid_counts_clone.clone()
             )).await;
 
             match result {
@@ -147,11 +142,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 error_stats.get_count(error_type)
             );
         }
-    }
-
-    info!("OID counts:");
-    for (oid, count) in (&*oid_counts).oid_iter() {
-        info!("   OID: {}, Count: {}", oid, count);
     }
 
     Ok(())

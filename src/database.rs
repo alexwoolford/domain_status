@@ -47,7 +47,7 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
         ssl_cert_version INTEGER,
         ssl_cert_valid_from INTEGER,
         ssl_cert_valid_to INTEGER,
-        ssl_cert_is_ev INTEGER,
+        oids STRING,
         timestamp INTEGER NOT NULL
     )",
     )
@@ -74,7 +74,7 @@ pub async fn update_database(
     ssl_cert_issuer: &Option<String>,
     ssl_cert_valid_from: Option<NaiveDateTime>,
     ssl_cert_valid_to: Option<NaiveDateTime>,
-    ssl_cert_is_ev: Option<bool>,
+    oids: Option<String>,
     pool: &SqlitePool,
 ) -> Result<(), Error> {
 
@@ -93,7 +93,7 @@ pub async fn update_database(
                 ssl_cert_issuer, \
                 ssl_cert_valid_from, \
                 ssl_cert_valid_to, \
-                ssl_cert_is_ev, \
+                oids, \
                 timestamp\
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
@@ -107,7 +107,7 @@ pub async fn update_database(
         .bind(&ssl_cert_issuer)
         .bind(valid_from_millis)
         .bind(valid_to_millis)
-        .bind(&ssl_cert_is_ev)
+        .bind(&oids)
         .bind(timestamp)
         .execute(pool)
         .await {
