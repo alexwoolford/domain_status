@@ -46,19 +46,19 @@ async fn handle_response(
     error_stats: &ErrorStats,
     elapsed: f64,
 ) -> Result<(), Error> {
-    let (subject, issuer, valid_from, valid_to, oids) = if url.starts_with("https://") {
+    let (tls_version, subject, issuer, valid_from, valid_to, oids) = if url.starts_with("https://") {
         match extract_domain(&extractor, url) {
             Ok(domain) => match get_ssl_certificate_info(domain.clone()).await {
-                Ok(cert_info) => (cert_info.subject, cert_info.issuer, cert_info.valid_from, cert_info.valid_to, cert_info.oids),
+                Ok(cert_info) => (cert_info.tls_version, cert_info.subject, cert_info.issuer, cert_info.valid_from, cert_info.valid_to, cert_info.oids),
                 Err(e) => {
                     error!("Failed to get SSL certificate info for {}: {}", domain, e);
-                    (None, None, None, None, None)
+                    (None, None, None, None, None, None)
                 }
             },
-            Err(_) => (None, None, None, None, None),
+            Err(_) => (None, None, None, None, None, None),
         }
     } else {
-        (None, None, None, None, None)
+        (None, None, None, None, None, None)
     };
 
     let final_url = response.url().to_string();
@@ -83,7 +83,7 @@ async fn handle_response(
 
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, keywords_str.as_deref(), timestamp, &subject, &issuer, valid_from, valid_to, oids, pool).await
+    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, keywords_str.as_deref(), timestamp, &tls_version, &subject, &issuer, valid_from, valid_to, oids, pool).await
 }
 
 
@@ -149,6 +149,7 @@ fn extract_meta_keywords(html: &str, error_stats: &ErrorStats) -> Option<Vec<Str
 }
 
 struct CertificateInfo {
+    tls_version: Option<String>,
     subject: Option<String>,
     issuer: Option<String>,
     valid_from: Option<chrono::NaiveDateTime>,
@@ -198,6 +199,10 @@ async fn get_ssl_certificate_info(domain: String) -> Result<CertificateInfo, any
     let mut tls_stream = connector.connect(server_name, sock).await
         .with_context(|| "TLS connection failed")?;
 
+    let tls_version = tls_stream.get_ref().1.protocol_version()
+        .map(|v| format!("{:?}", v)) // Convert the version enum to a string
+        .unwrap_or_else(|| "Unknown".to_string());
+
     let request = format!(
         "GET / HTTP/1.1\r\n\
          Host: {}\r\n\
@@ -243,6 +248,7 @@ async fn get_ssl_certificate_info(domain: String) -> Result<CertificateInfo, any
             info!("Domain: {:?}; OIDs: {}", domain, serialized_oids);
 
             return Ok(CertificateInfo {
+                tls_version: Some(tls_version),
                 subject:Some(subject),
                 issuer: Some(issuer),
                 valid_from: Some(valid_from),
