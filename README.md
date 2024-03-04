@@ -36,6 +36,7 @@ The results are stored in the domain_results.db SQLite database, inside a table 
 | **response_time**       | `numeric` | How long the request took (seconds).                                                                                                   |
 | **title**               | `text`    | The webpage's title, when applicable.                                                                                                  |
 | **keywords**            | `text`    | The webpage's meta keywords from the `<meta name="keywords">` tag.                                                                     |
+| **tls_version**         | `text`    | The TLS protocol version used in the connection.                                                                                       |
 | **ssl_cert_subject**    | `text`    | The distinguished name of the entity associated with the certificate.                                                                  |
 | **ssl_cert_issuer**     | `text`    | The distinguished name of the certificate authority (CA) that issued the certificate.                                                  |
 | **ssl_cert_valid_from** | `integer` | The start date/time of the certificate's validity period, recorded in epoch millis.                                                    |
