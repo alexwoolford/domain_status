@@ -18,6 +18,7 @@ use crate::error_handling::{ErrorStats, ErrorType, get_retry_strategy, update_er
 
 lazy_static! {
     static ref TITLE_SELECTOR: Selector = Selector::parse("title").unwrap();
+    static ref META_KEYWORDS_SELECTOR: Selector = Selector::parse("meta[name='keywords']").unwrap();
 }
 
 fn extract_domain(extractor: &TldExtractor, url: &str) -> Result<String, anyhow::Error> {
@@ -64,14 +65,25 @@ async fn handle_response(
     let status = response.status();
     let status_desc = status.canonical_reason().unwrap_or_else(|| "Unknown Status Code");
 
-    let title = response.text().await.map(|body| extract_title(&body, error_stats)).unwrap_or_default();
+    let body = response.text().await.unwrap_or_default();
+
+    let title = extract_title(&body, error_stats);
+
+    let keywords = extract_meta_keywords(&body, error_stats);
+    let keywords_str = if let Some(kw) = keywords {
+        // Create a String from the Vec<String> and pass a reference to it
+        Some(kw.join(", "))
+    } else {
+        // No keywords, so we pass None
+        None
+    };
 
     let initial_domain = extract_domain(&extractor, url)?;
     let final_domain = extract_domain(&extractor, &final_url)?;
 
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, timestamp, &subject, &issuer, valid_from, valid_to, oids, pool).await
+    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, keywords_str.as_deref(), timestamp, &subject, &issuer, valid_from, valid_to, oids, pool).await
 }
 
 
@@ -104,6 +116,34 @@ fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
         None => {
             error_stats.increment(ErrorType::TitleExtractError);
             String::from("")
+        }
+    }
+}
+
+fn extract_meta_keywords(html: &str, error_stats: &ErrorStats) -> Option<Vec<String>> {
+    let parsed_html = Html::parse_document(html);
+    let meta_keywords = parsed_html.select(&META_KEYWORDS_SELECTOR).next()
+        .and_then(|element| element.value().attr("content"));
+
+    match meta_keywords {
+        Some(content) => {
+            let keywords: Vec<String> = content.split(',')
+                .map(|keyword| keyword.trim().to_lowercase())
+                .filter(|keyword| !keyword.is_empty()) // Filter out any empty strings
+                .collect();
+
+            if keywords.is_empty() {
+                // If after filtering we have no keywords, return None instead of an empty vector
+                error_stats.increment(ErrorType::KeywordExtractError);
+                None
+            } else {
+                Some(keywords)
+            }
+        },
+        None => {
+            // No keywords meta tag found
+            error_stats.increment(ErrorType::KeywordExtractError);
+            None
         }
     }
 }

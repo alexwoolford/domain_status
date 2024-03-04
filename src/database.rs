@@ -42,6 +42,7 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
         status_description TEXT NOT NULL,
         response_time NUMERIC(10, 2),
         title TEXT NOT NULL,
+        keywords TEXT,
         ssl_cert_subject TEXT,
         ssl_cert_issuer TEXT,
         ssl_cert_valid_from INTEGER,
@@ -68,6 +69,7 @@ pub async fn update_database(
     status_desc: &str,
     elapsed: f64,
     title: &str,
+    keywords: Option<&str>,
     timestamp: i64,
     ssl_cert_subject: &Option<String>,
     ssl_cert_issuer: &Option<String>,
@@ -88,13 +90,14 @@ pub async fn update_database(
                 status_description, \
                 response_time, \
                 title, \
+                keywords, \
                 ssl_cert_subject, \
                 ssl_cert_issuer, \
                 ssl_cert_valid_from, \
                 ssl_cert_valid_to, \
                 oids, \
                 timestamp\
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&initial_domain)
         .bind(&final_domain)
@@ -102,6 +105,7 @@ pub async fn update_database(
         .bind(status_desc)
         .bind(elapsed)
         .bind(&title)
+        .bind(keywords)
         .bind(&ssl_cert_subject)
         .bind(&ssl_cert_issuer)
         .bind(valid_from_millis)

@@ -24,6 +24,7 @@ pub enum ErrorType {
     HttpRequestOtherError,
     HttpRequestTooManyRedirects,
     TitleExtractError,
+    KeywordExtractError,
     ProcessUrlTimeout,
 }
 
@@ -41,6 +42,7 @@ impl ErrorType {
             ErrorType::HttpRequestOtherError => "HTTP request other error",
             ErrorType::HttpRequestTooManyRedirects => "Too many redirects",
             ErrorType::TitleExtractError => "Title extract error",
+            ErrorType::KeywordExtractError => "Keyword extract error",
             ErrorType::ProcessUrlTimeout => "Process URL timeout",
         }
     }
