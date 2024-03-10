@@ -7,8 +7,8 @@ use sqlx::SqlitePool;
 use structopt::lazy_static::lazy_static;
 use tldextract::TldExtractor;
 use tokio::io::AsyncWriteExt;
-use rustls::{RootCertStore};
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;
 use x509_parser::extensions::ParsedExtension;
@@ -86,7 +86,6 @@ async fn handle_response(
     update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, keywords_str.as_deref(), timestamp, &tls_version, &subject, &issuer, valid_from, valid_to, oids, pool).await
 }
 
-
 async fn handle_http_request(
     client: &reqwest::Client,
     url: &str,
@@ -96,16 +95,20 @@ async fn handle_http_request(
     start_time: std::time::Instant,
 ) -> Result<(), Error> {
     let res = client.get(url).send().await;
+
     let elapsed = start_time.elapsed().as_secs_f64();
 
-    match res {
-        Ok(response) => handle_response(response, url, pool, extractor, error_stats, elapsed).await,
+    let response = match res {
+        Ok(response) => response,
         Err(e) => {
-            update_error_stats(error_stats, &e);
-            Err(e.into())
+            update_error_stats(error_stats, &e).await;
+            return Err(e.into());
         }
-    }
+    };
+
+    handle_response(response, url, pool, extractor, error_stats, elapsed).await
 }
+
 
 fn extract_title(html: &str, error_stats: &ErrorStats) -> String {
     let parsed_html = Html::parse_document(html);
@@ -176,7 +179,6 @@ fn extract_certificate_policies(cert: &x509_parser::certificate::X509Certificate
 }
 
 async fn get_ssl_certificate_info(domain: String) -> Result<CertificateInfo, anyhow::Error> {
-
     let mut root_store = RootCertStore::empty();
     root_store.extend(
         webpki_roots::TLS_SERVER_ROOTS
@@ -184,7 +186,7 @@ async fn get_ssl_certificate_info(domain: String) -> Result<CertificateInfo, any
             .cloned()
     );
 
-    let config = rustls::ClientConfig::builder()
+    let config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
 

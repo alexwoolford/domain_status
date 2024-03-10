@@ -11,9 +11,9 @@ reqwest = { version = "0.11", features = ["tokio-native-tls"] }
 tokio = { version = "1.29", features = ["full"] }
 tokio-retry = "0.3"
 futures = "0.3"
-rustls = "0.22"
+rustls = "0.23"
 webpki-roots = "0.26"
-x509-parser = "0.15"
+x509-parser = "0.16"
 tokio-rustls = "0.25"
 
 
@@ -21,7 +21,7 @@ tokio-rustls = "0.25"
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"], default-features = false }
 
 # Scraping and URL handling
-scraper = "0.18"
+scraper = "0.19"
 url = "2.4"
 tldextract = "0.6"
 validators = "0.25"
