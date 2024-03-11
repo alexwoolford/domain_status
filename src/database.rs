@@ -38,6 +38,7 @@ pub async fn create_table(pool: &Pool<Sqlite>) -> Result<(), Box<dyn std::error:
         id INTEGER PRIMARY KEY,
         domain TEXT NOT NULL,
         final_domain TEXT NOT NULL,
+        ip_address TEXT NOT NULL,
         status INTEGER NOT NULL,
         status_description TEXT NOT NULL,
         response_time NUMERIC(10, 2),
@@ -67,6 +68,7 @@ fn naive_datetime_to_millis(datetime: Option<&NaiveDateTime>) -> Option<i64> {
 pub async fn update_database(
     initial_domain: &str,
     final_domain: &str,
+    ip_address: &str,
     status: reqwest::StatusCode,
     status_desc: &str,
     elapsed: f64,
@@ -90,6 +92,7 @@ pub async fn update_database(
         "INSERT INTO url_status (\
                 domain, \
                 final_domain, \
+                ip_address, \
                 status, \
                 status_description, \
                 response_time, \
@@ -103,10 +106,11 @@ pub async fn update_database(
                 ssl_cert_valid_to, \
                 oids, \
                 timestamp\
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&initial_domain)
         .bind(&final_domain)
+        .bind(&ip_address)
         .bind(status.as_u16())
         .bind(status_desc)
         .bind(elapsed)

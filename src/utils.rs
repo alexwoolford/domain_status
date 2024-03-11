@@ -1,3 +1,4 @@
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use anyhow::{Result, Error, Context};
@@ -9,8 +10,10 @@ use tldextract::TldExtractor;
 use tokio::io::AsyncWriteExt;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use trust_dns_resolver::TokioAsyncResolver;
 use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;
+use reqwest::Url;
 use x509_parser::extensions::ParsedExtension;
 
 use crate::database::update_database;
@@ -83,13 +86,18 @@ async fn handle_response(
     let initial_domain = extract_domain(&extractor, url)?;
     let final_domain = extract_domain(&extractor, &final_url)?;
 
+    let url = Url::parse(&final_url)?;
+    let host = url.host_str().ok_or_else(|| anyhow::Error::msg("Failed to extract host"))?;
+
+    let ip_address = resolve_host_to_ip(host).await?;
+
     let security_headers = extract_security_headers(&headers);
     let security_headers_json = serde_json::to_string(&security_headers)
         .unwrap_or_else(|_| "{}".to_string());
 
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, keywords_str.as_deref(), &security_headers_json, timestamp, &tls_version, &subject, &issuer, valid_from, valid_to, oids, pool).await
+    update_database(&initial_domain, &final_domain, &ip_address, status, status_desc, elapsed, &title, keywords_str.as_deref(), &security_headers_json, timestamp, &tls_version, &subject, &issuer, valid_from, valid_to, oids, pool).await
 }
 
 fn extract_security_headers(headers: &reqwest::header::HeaderMap) -> HashMap<String, String> {
@@ -200,6 +208,23 @@ fn extract_certificate_policies(cert: &x509_parser::certificate::X509Certificate
         }
     }
     Ok(oids)
+}
+
+async fn resolve_host_to_ip(host: &str) -> Result<String, Error> {
+    // Create the resolver
+    let resolver = TokioAsyncResolver::tokio_from_system_conf()
+        .map_err(|e| Error::new(e))?;
+
+    // Perform the DNS query asynchronously
+    let response = resolver.lookup_ip(host).await
+        .map_err(|e| Error::new(e))?;
+
+    // Extract the first IP address from the response
+    let ip = response.iter().next()
+        .ok_or_else(|| Error::msg("No IP addresses found"))?
+        .to_string();
+
+    Ok(ip)
 }
 
 async fn get_ssl_certificate_info(domain: String) -> Result<CertificateInfo, anyhow::Error> {
