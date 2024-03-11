@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use anyhow::{Result, Error, Context};
 use scraper::{Html, Selector};
@@ -61,6 +61,8 @@ async fn handle_response(
         (None, None, None, None, None, None)
     };
 
+    let headers = response.headers().clone();
+
     let final_url = response.url().to_string();
     let status = response.status();
     let status_desc = status.canonical_reason().unwrap_or_else(|| "Unknown Status Code");
@@ -81,9 +83,31 @@ async fn handle_response(
     let initial_domain = extract_domain(&extractor, url)?;
     let final_domain = extract_domain(&extractor, &final_url)?;
 
+    let security_headers = extract_security_headers(&headers);
+    let security_headers_json = serde_json::to_string(&security_headers)
+        .unwrap_or_else(|_| "{}".to_string());
+
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, keywords_str.as_deref(), timestamp, &tls_version, &subject, &issuer, valid_from, valid_to, oids, pool).await
+    update_database(&initial_domain, &final_domain, status, status_desc, elapsed, &title, keywords_str.as_deref(), &security_headers_json, timestamp, &tls_version, &subject, &issuer, valid_from, valid_to, oids, pool).await
+}
+
+fn extract_security_headers(headers: &reqwest::header::HeaderMap) -> HashMap<String, String> {
+    let headers_list = [
+        "Content-Security-Policy",
+        "Strict-Transport-Security",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "X-XSS-Protection",
+        "Referrer-Policy",
+        "Permissions-Policy",
+    ];
+
+    headers_list.iter().filter_map(|&header_name| {
+        headers.get(header_name).map(|value| {
+            (header_name.to_string(), value.to_str().unwrap_or_default().to_string())
+        })
+    }).collect()
 }
 
 async fn handle_http_request(
