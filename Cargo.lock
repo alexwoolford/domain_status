@@ -844,7 +844,7 @@ dependencies = [
  "once_cell",
  "psl",
  "regex",
- "reqwest 0.12.26",
+ "reqwest 0.12.28",
  "rustls",
  "scraper",
  "serde",
@@ -2537,9 +2537,9 @@ dependencies = [
 
 [[package]]
 name = "psl"
-version = "2.1.173"
+version = "2.1.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1f92451a57d4ac86539041234be4c839d381e536a43c816f7b8f5b6139a74dd"
+checksum = "a1fb740c4ef76c2187ae4a56a74d58595bb8258e973704f5d60545f3e1d3e69a"
 dependencies = [
  "psl-types",
 ]
@@ -2771,9 +2771,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.26"
+version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b4c14b2d9afca6a60277086b0cc6a6ae0b568f6f7916c943a8cdc79f8be240f"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3076,15 +3076,15 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.145"
+version = "1.0.148"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
+checksum = "3084b546a1dd6289475996f182a22aba973866ea8e8b02c51d9f46b1336a22da"
 dependencies = [
  "itoa",
  "memchr",
- "ryu",
  "serde",
  "serde_core",
+ "zmij",
 ]
 
 [[package]]
@@ -4722,3 +4722,9 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "zmij"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f4a4e8e9dc5c62d159f04fcdbe07f4c3fb710415aab4754bf11505501e3251d"
