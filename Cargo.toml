@@ -69,7 +69,7 @@ thiserror = "^2.0"
 # Logging
 log = "^0.4"
 env_logger = "^0.11"
-colored = "^3.0"
+colored = "^3.1"
 indicatif = "^0.17"
 
 # Other
