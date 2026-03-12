@@ -101,3 +101,7 @@ proptest-regressions/
 rust-reference-projects/
 reference-repos/
 rust-cache/
+
+# Sample data files (user-specific)
+sample_100.txt
+public_companies.txt
