@@ -36,9 +36,9 @@ This document summarizes an audit of all secret types in `domain_status_alt.db`:
 
 ### 3. sourcegraph-access-token — Mostly false positives
 
-- **pressganey.com**: 40-char hex in image `alt`/`src` (e.g. `wp-content/uploads/.../25fcd2f6aa55a8a7a21442797bd47a25876d0f59`) — **image hash / cache ID**, not a token.
-- **fodjan.com**: 40-char hex in CAPTCHA URL `id=54ca98cb2ffa...` — **captcha/session ID**, not Sourcegraph.
-- **iway.ch**: `address_api_token = 'a01aecfdcf4dfa829bf2e7a71ab03de7cba631cd'` — could be a **real** API token (wrong product name).
+- 40-char hex in image `alt`/`src` (e.g. `wp-content/uploads/.../25fcd2f6aa55a8a7a21442797bd47a25876d0f59`) — **image hash / cache ID**, not a token.
+- 40-char hex in CAPTCHA URL `id=54ca98cb2ffa...` — **captcha/session ID**, not Sourcegraph.
+- `address_api_token = 'a01aecfdcf4dfa829bf2e7a71ab03de7cba631cd'` — could be a **real** API token (wrong product name).
 - **Root cause**: Rule matches any 40-char hex when “sourcegraph” appears; same pattern used for image hashes, captcha IDs, and generic tokens.
 - **Action**: Add allowlist regexes for: image URLs (e.g. `wp-content/uploads`, `alt="[^"]*[0-9a-fA-F]{40}`), `_siwp_captcha`, `wp-image-`.
 
