@@ -199,4 +199,4 @@ assert_fs = "^1.1"           # Temp dirs and file layout for tests
 rstest = "^0.21"             # Parameterized tests and fixtures
 wiremock = "^0.6"           # HTTP mocking for integration tests
 tower = "0.5.3"
-rcgen = "0.14.7"
+rcgen = "0.14.8"
