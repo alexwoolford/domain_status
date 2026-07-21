@@ -13,6 +13,22 @@ use crate::utils::{duration_to_us, UrlTimingMetrics};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Serializes a response header map into newline-separated `Name: value` lines
+/// for secret scanning. Repeated headers (e.g. multiple `Set-Cookie`) each get
+/// their own line; non-UTF-8 header values are skipped.
+fn serialize_headers(headers: &reqwest::header::HeaderMap) -> String {
+    let mut out = String::new();
+    for (name, value) in headers {
+        if let Ok(v) = value.to_str() {
+            out.push_str(name.as_str());
+            out.push_str(": ");
+            out.push_str(v);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Handles an HTTP response, extracting all relevant data and storing it in the database.
 ///
 /// This function orchestrates domain extraction, TLS certificate retrieval, DNS lookups,
@@ -175,6 +191,19 @@ pub async fn handle_response(
             resp_data.final_domain
         );
         html_data.exposed_secrets.extend(external_secrets);
+    }
+
+    // Scan response headers (incl. Set-Cookie) for secrets that never appear in
+    // the HTML body — Authorization: Bearer <jwt>, X-Api-Key, session/JWT cookies.
+    let header_secrets =
+        crate::parse::detect_exposed_secrets_in_headers(&serialize_headers(&resp_data.headers));
+    if !header_secrets.is_empty() {
+        log::info!(
+            "Detected {} secret(s) in response headers for {}",
+            header_secrets.len(),
+            resp_data.final_domain
+        );
+        html_data.exposed_secrets.extend(header_secrets);
     }
 
     debug!(
