@@ -262,7 +262,8 @@ mod tests {
             TokioResolver::builder_tokio()
                 .unwrap()
                 .with_options(ResolverOpts::default())
-                .build(),
+                .build()
+                .expect("resolver builds with default config"),
         );
         let error_stats = Arc::new(ProcessingStats::new());
         let timing_stats = Arc::new(TimingStats::new());
@@ -308,7 +309,8 @@ mod tests {
             TokioResolver::builder_tokio()
                 .unwrap()
                 .with_options(ResolverOpts::default())
-                .build(),
+                .build()
+                .expect("resolver builds with default config"),
         );
         let error_stats = Arc::new(ProcessingStats::new());
         let timing_stats = Arc::new(TimingStats::new());
@@ -1117,7 +1119,8 @@ mod tests {
             TokioResolver::builder_tokio()
                 .unwrap()
                 .with_options(ResolverOpts::default())
-                .build(),
+                .build()
+                .expect("resolver builds with default config"),
         );
         let error_stats = Arc::new(ProcessingStats::new());
         let timing_stats = Arc::new(TimingStats::new());
