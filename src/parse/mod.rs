@@ -38,3 +38,7 @@ pub use structured::{extract_structured_data, StructuredData};
 mod tests {
     include!("tests.rs");
 }
+
+#[cfg(test)]
+#[path = "secrets_corpus.rs"]
+mod secrets_corpus;
