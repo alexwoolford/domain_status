@@ -601,7 +601,7 @@ fn is_inside_json_ld_script(body: &str, pos: usize) -> bool {
     region[..tag_end].contains("application/ld+json")
 }
 
-/// Location for a body match: prefer json_ld when inside LD+JSON script.
+/// Location for a body match: prefer `json_ld` when inside LD+JSON script.
 fn infer_location_for_body_match(body: &str, match_start: usize, context: &str) -> &'static str {
     if is_inside_json_ld_script(body, match_start) {
         return "json_ld";
@@ -1485,7 +1485,7 @@ mod tests {
         assert_eq!(hubspot.unwrap().matched_value, uuid);
     }
 
-    /// Response-header correlation IDs must not be reported as HubSpot API keys.
+    /// Response-header correlation IDs must not be reported as `HubSpot` API keys.
     #[test]
     fn test_hubspot_correlation_id_header_skipped() {
         let uuid = "019F9044-75EC-7F8C-9A70-F99ED4ECC4BD";
@@ -1499,7 +1499,7 @@ mod tests {
         );
     }
 
-    /// Public HubSpot form widget IDs in env/config blobs must be skipped.
+    /// Public `HubSpot` form widget IDs in env/config blobs must be skipped.
     #[test]
     fn test_hubspot_form_id_config_skipped() {
         let form_id = "7EA134CD-6DBC-482C-B7C2-576FBF09725E";
@@ -1522,9 +1522,7 @@ mod tests {
     #[test]
     fn test_grafana_api_key_powerbi_embed_skipped() {
         let token = "eyJrIjoiNTc5MmJjODMtYTM1NS00MWZlLWE1N2EtN2IyNThiOTk3MjI1IiwidCI6IjlkZjk0OWY4LWE2ZWItNDE5ZC05Y2FhLTFmOGM4M2RiNjc0ZiJ9";
-        let body = format!(
-            r#"href="https://app.powerbi.com/view?r={token}" target="_blank""#
-        );
+        let body = format!(r#"href="https://app.powerbi.com/view?r={token}" target="_blank""#);
         let secrets = detect_exposed_secrets(&body);
         let grafana = secrets.iter().find(|s| s.secret_type == "grafana-api-key");
         assert!(
@@ -1554,7 +1552,9 @@ mod tests {
     fn test_dropbox_short_identifier_near_dropbox_skipped() {
         let body = r#"{"dropbox":true,"theChampSiteUrl":"abcde1234567890"}"#;
         let secrets = detect_exposed_secrets(body);
-        let dropbox = secrets.iter().find(|s| s.secret_type == "dropbox-api-token");
+        let dropbox = secrets
+            .iter()
+            .find(|s| s.secret_type == "dropbox-api-token");
         assert!(
             dropbox.is_none(),
             "15-char near dropbox must not fire dropbox-api-token; got {:?}",
@@ -1623,7 +1623,7 @@ mod tests {
         assert_eq!(square.unwrap().matched_value, sq);
     }
 
-    /// datadogVersion build hash must not match; DD_API_KEY assignment must.
+    /// datadogVersion build hash must not match; `DD_API_KEY` assignment must.
     #[test]
     fn test_datadog_version_skipped_api_key_kept() {
         let hash = "e561f43f1a2b3c4d5e6f708192a3b4c5d6e7f809";
@@ -1650,11 +1650,14 @@ mod tests {
         assert_eq!(dd.unwrap().matched_value, hash);
     }
 
-    /// Bare EAAC… without access_token assignment must not match; assignment must.
+    /// Bare EAAC… without `access_token` assignment must not match; assignment must.
     #[test]
     fn test_facebook_page_token_requires_assignment() {
         // High-entropy EAAC token; need ≥100 chars after EAAC for the rule.
-        let token = format!("EAAC{}", "x7Km2pQ9vL4nR8wY1sT6uA3bC5dE0fG2hJ4kM6nP8qS0tV2wX4yZ6aB8cD0eF2gH4j".repeat(2));
+        let token = format!(
+            "EAAC{}",
+            "x7Km2pQ9vL4nR8wY1sT6uA3bC5dE0fG2hJ4kM6nP8qS0tV2wX4yZ6aB8cD0eF2gH4j".repeat(2)
+        );
         assert!(token.len() >= 104);
         let body_bare = format!(r#"noise {token} more"#);
         let secrets_bare = detect_exposed_secrets(&body_bare);
@@ -1706,7 +1709,7 @@ mod tests {
         );
     }
 
-    /// Opaque non-camel LinkedIn client id assignment must still be reported.
+    /// Opaque non-camel `LinkedIn` client id assignment must still be reported.
     #[test]
     fn test_linkedin_opaque_client_id_still_reported() {
         // 14-char opaque token: no lowercase→uppercase camelCase transition.
@@ -1724,7 +1727,7 @@ mod tests {
         assert_eq!(linkedin.unwrap().matched_value, client_id);
     }
 
-    /// Opaque 16-char LinkedIn client secret must still be reported.
+    /// Opaque 16-char `LinkedIn` client secret must still be reported.
     #[test]
     fn test_linkedin_opaque_client_secret_still_reported() {
         let secret = "a1b2c3d4e5f6g7h8";
@@ -1788,9 +1791,7 @@ mod tests {
     #[test]
     fn test_generic_public_product_ids_skipped() {
         let weglot_key = "wg_0123456789abcdef0123456789abcdef";
-        let body_wg = format!(
-            r#"Weglot.initialize({{ api_key: '{weglot_key}' }});"#
-        );
+        let body_wg = format!(r#"Weglot.initialize({{ api_key: '{weglot_key}' }});"#);
         let secrets_wg = detect_exposed_secrets(&body_wg);
         assert!(
             secrets_wg

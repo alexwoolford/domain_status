@@ -100,7 +100,10 @@ pub async fn scan_external_scripts(
         .collect();
 
     let eligible_count = u32::try_from(eligible.len()).unwrap_or(u32::MAX);
-    let resolved: Vec<String> = eligible.into_iter().take(MAX_SCRIPT_FETCH_PER_PAGE).collect();
+    let resolved: Vec<String> = eligible
+        .into_iter()
+        .take(MAX_SCRIPT_FETCH_PER_PAGE)
+        .collect();
 
     if resolved.is_empty() {
         return ExternalScriptScanResult {
