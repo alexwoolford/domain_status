@@ -310,16 +310,18 @@ mod tests {
 
     #[test]
     fn test_init_logger_to_file_invalid_path() {
-        // Test error handling for invalid file path (e.g., directory instead of file)
-        use std::path::Path;
-        // On Unix, trying to create a file in a non-existent directory should fail
-        let invalid_path = Path::new("/nonexistent/directory/that/does/not/exist/log.txt");
+        // Parent path is an existing *file*, so create_dir_all/File::create must fail
+        // on every OS. (A bare "/nonexistent/..." path is creatable on Windows because
+        // ensure_parent_dir_secure uses create_dir_all on the current drive root.)
+        let blocker = tempfile::NamedTempFile::new().expect("tempfile");
+        let invalid_path = blocker.path().join("nested").join("log.txt");
 
-        let result = init_logger_to_file(LevelFilter::Info, invalid_path);
-        // Should return an error for invalid path (or logger already set / path semantics differ on Windows)
-        assert!(result.is_err(), "Should fail when file cannot be created");
+        let result = init_logger_to_file(LevelFilter::Info, &invalid_path);
+        assert!(
+            result.is_err(),
+            "Should fail when parent path is not a directory"
+        );
         let err = result.unwrap_err();
-        // Accept LoggerSetupError (file/dir creation failed) or LoggerError (e.g. logger already set on Windows)
         match &err {
             InitializationError::LoggerSetupError(_) => {}
             InitializationError::LoggerError(_) => {}
